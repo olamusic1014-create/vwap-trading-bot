@@ -4,7 +4,9 @@ import datetime
 import twstock
 import numpy as np
 import time
-import streamlit as st # 引入 streamlit 以使用快取功能
+import random # 引入隨機數
+import requests # 引入請求模組
+import streamlit as st
 
 # --- 熱門股池 ---
 MARKET_POOL = [
@@ -20,7 +22,17 @@ MARKET_POOL = [
     '2353.TW', '2323.TW', '2352.TW', '3260.TW', '6239.TW'
 ]
 
-# 設定快取：1分鐘內不要重複抓即時報價
+# 🔥 核心偽裝：建立一個看起來像瀏覽器的 Session
+def get_session():
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Connection": "keep-alive"
+    })
+    return session
+
 @st.cache_data(ttl=60)
 def get_realtime_quote(symbol):
     try:
@@ -34,44 +46,62 @@ def get_realtime_quote(symbol):
     except: pass
     return None
 
-# 設定快取：15分鐘內不要重複執行全市場掃描 (避免被鎖 IP)
 @st.cache_data(ttl=900)
 def screen_hot_stocks(limit=15):
     screened_list = []
     print("正在掃描市場熱門股...")
     
+    # 取得偽裝 Session
+    session = get_session()
+    
     for symbol in MARKET_POOL:
-        try:
-            # 🔥 關鍵降速：每次請求休息 0.25 秒
-            time.sleep(0.25)
-            
-            ticker = yf.Ticker(symbol)
-            hist = ticker.history(period="3mo", interval="1d")
-            if len(hist) < 20: continue
-            
-            ma20 = hist['Close'].rolling(window=20).mean().iloc[-1]
-            current_price = hist['Close'].iloc[-1]
-            
-            if current_price < ma20: continue
+        # 🔥 隨機降速：每次休息 0.5 ~ 1.5 秒 (模仿人類)
+        time.sleep(random.uniform(0.5, 1.5))
+        
+        # 🔥 重試機制：如果失敗，最多試 2 次
+        retries = 2
+        for i in range(retries):
+            try:
+                # 傳入 session 進行偽裝
+                ticker = yf.Ticker(symbol, session=session)
+                hist = ticker.history(period="3mo", interval="1d")
                 
-            hist['Range_Pct'] = ((hist['High'] - hist['Low']) / hist['Close']) * 100
-            avg_volatility = hist['Range_Pct'].tail(10).mean()
-            
-            if avg_volatility >= 2.0:
-                screened_list.append({
-                    'symbol': symbol,
-                    'volatility': avg_volatility
-                })
-        except: continue
+                if len(hist) < 20: break # 資料不足就不試了
+                
+                ma20 = hist['Close'].rolling(window=20).mean().iloc[-1]
+                current_price = hist['Close'].iloc[-1]
+                
+                if current_price < ma20: break
+                    
+                hist['Range_Pct'] = ((hist['High'] - hist['Low']) / hist['Close']) * 100
+                avg_volatility = hist['Range_Pct'].tail(10).mean()
+                
+                if avg_volatility >= 2.0:
+                    screened_list.append({
+                        'symbol': symbol,
+                        'volatility': avg_volatility
+                    })
+                break # 成功了就跳出重試迴圈
+                
+            except Exception as e:
+                if "RateLimit" in str(e) and i < retries - 1:
+                    print(f"⚠️ {symbol} 被擋，休息 3 秒後重試...")
+                    time.sleep(3) # 被抓到就休息久一點
+                    session = get_session() # 換一個新 Session
+                else:
+                    continue # 放棄這檔，換下一檔
         
     screened_list.sort(key=lambda x: x['volatility'], reverse=True)
     return screened_list[:limit]
 
-# 設定快取：1小時內不要重複抓歷史回測 (歷史數據今天不會變)
 @st.cache_data(ttl=3600)
 def backtest_past_week(symbol):
-    ticker = yf.Ticker(symbol)
-    df_all = ticker.history(period="5d", interval="1m")
+    session = get_session()
+    ticker = yf.Ticker(symbol, session=session)
+    try:
+        df_all = ticker.history(period="5d", interval="1m")
+    except:
+        return [] # 抓不到就回傳空
     
     if df_all.empty: return []
 
@@ -147,13 +177,10 @@ def backtest_past_week(symbol):
         
     return daily_results
 
-# 設定快取：1分鐘內不要重複抓訊號
 @st.cache_data(ttl=60)
 def get_orb_signals(symbol):
-    # 加入微小延遲，防止手動頻繁刷新時被鎖
-    time.sleep(0.1) 
-    
-    ticker = yf.Ticker(symbol)
+    session = get_session()
+    ticker = yf.Ticker(symbol, session=session)
     df = ticker.history(period="1d", interval="1m")
     df_daily = ticker.history(period="3mo", interval="1d")
     
@@ -246,7 +273,6 @@ def get_orb_signals(symbol):
 
 def backtest_strategy(symbol):
     try:
-        # 重用 get_orb_signals 邏輯，它現在有快取了，所以跑起來會很快
         df, stats = get_orb_signals(symbol)
         adr = stats.get('context', {}).get('adr_pct', 0)
         
