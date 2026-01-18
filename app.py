@@ -7,7 +7,11 @@ import analyzer
 from analyzer import get_orb_signals, screen_hot_stocks, backtest_past_week
 import twstock
 
-st.set_page_config(page_title="智能選股戰情室", layout="wide")
+st.set_page_config(
+    page_title="智能選股戰情室", 
+    layout="wide",
+    page_icon="🤖"  # 🔥 這裡！加上這一行
+)
 
 if 'target_symbol' not in st.session_state: st.session_state['target_symbol'] = "2301"
 if 'backtest_results' not in st.session_state: st.session_state['backtest_results'] = None
