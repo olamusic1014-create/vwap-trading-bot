@@ -4,8 +4,7 @@ import datetime
 import twstock
 import numpy as np
 import time
-import random # 引入隨機數
-import requests # 引入請求模組
+import random
 import streamlit as st
 
 # --- 熱門股池 ---
@@ -21,17 +20,6 @@ MARKET_POOL = [
     '3034.TW', '4961.TW', '4919.TW', '2458.TW', '3583.TW', 
     '2353.TW', '2323.TW', '2352.TW', '3260.TW', '6239.TW'
 ]
-
-# 🔥 核心偽裝：建立一個看起來像瀏覽器的 Session
-def get_session():
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Connection": "keep-alive"
-    })
-    return session
 
 @st.cache_data(ttl=60)
 def get_realtime_quote(symbol):
@@ -51,22 +39,19 @@ def screen_hot_stocks(limit=15):
     screened_list = []
     print("正在掃描市場熱門股...")
     
-    # 取得偽裝 Session
-    session = get_session()
-    
     for symbol in MARKET_POOL:
-        # 🔥 隨機降速：每次休息 0.5 ~ 1.5 秒 (模仿人類)
-        time.sleep(random.uniform(0.5, 1.5))
+        # 隨機休息，避免機械式請求
+        time.sleep(random.uniform(0.2, 0.5))
         
-        # 🔥 重試機制：如果失敗，最多試 2 次
+        # 重試機制
         retries = 2
         for i in range(retries):
             try:
-                # 傳入 session 進行偽裝
-                ticker = yf.Ticker(symbol, session=session)
+                # 🔥 這裡拿掉了 session，讓 yfinance 自動使用 curl_cffi
+                ticker = yf.Ticker(symbol)
                 hist = ticker.history(period="3mo", interval="1d")
                 
-                if len(hist) < 20: break # 資料不足就不試了
+                if len(hist) < 20: break
                 
                 ma20 = hist['Close'].rolling(window=20).mean().iloc[-1]
                 current_price = hist['Close'].iloc[-1]
@@ -81,27 +66,24 @@ def screen_hot_stocks(limit=15):
                         'symbol': symbol,
                         'volatility': avg_volatility
                     })
-                break # 成功了就跳出重試迴圈
+                break 
                 
             except Exception as e:
-                if "RateLimit" in str(e) and i < retries - 1:
-                    print(f"⚠️ {symbol} 被擋，休息 3 秒後重試...")
-                    time.sleep(3) # 被抓到就休息久一點
-                    session = get_session() # 換一個新 Session
+                if i < retries - 1:
+                    time.sleep(1) # 失敗休息一下再試
                 else:
-                    continue # 放棄這檔，換下一檔
+                    continue 
         
     screened_list.sort(key=lambda x: x['volatility'], reverse=True)
     return screened_list[:limit]
 
 @st.cache_data(ttl=3600)
 def backtest_past_week(symbol):
-    session = get_session()
-    ticker = yf.Ticker(symbol, session=session)
     try:
+        ticker = yf.Ticker(symbol)
         df_all = ticker.history(period="5d", interval="1m")
     except:
-        return [] # 抓不到就回傳空
+        return []
     
     if df_all.empty: return []
 
@@ -179,10 +161,15 @@ def backtest_past_week(symbol):
 
 @st.cache_data(ttl=60)
 def get_orb_signals(symbol):
-    session = get_session()
-    ticker = yf.Ticker(symbol, session=session)
-    df = ticker.history(period="1d", interval="1m")
-    df_daily = ticker.history(period="3mo", interval="1d")
+    time.sleep(0.1) 
+    ticker = yf.Ticker(symbol)
+    
+    # 這裡如果不加 try-except，單次抓取失敗就會報錯
+    try:
+        df = ticker.history(period="1d", interval="1m")
+        df_daily = ticker.history(period="3mo", interval="1d")
+    except:
+        return None, {"error": "Fetch failed"}
     
     context = {"trend": "Neutral", "ma20": 0, "gap_percent": 0.0, "adr_pct": 0.0}
     if not df_daily.empty and len(df_daily) >= 20:
