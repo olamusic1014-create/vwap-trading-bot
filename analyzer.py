@@ -3,8 +3,10 @@ import pandas as pd
 import datetime
 import twstock
 import numpy as np
+import time
+import streamlit as st # 引入 streamlit 以使用快取功能
 
-# --- 熱門股池 (維持不變) ---
+# --- 熱門股池 ---
 MARKET_POOL = [
     '2330.TW', '2317.TW', '2454.TW', '2382.TW', '2303.TW', '2881.TW', '2891.TW', '2308.TW', '3711.TW', '3037.TW',
     '3035.TW', '3017.TW', '2368.TW', '3231.TW', '3443.TW', '3661.TW', '6669.TW', '2376.TW', '2356.TW', '2301.TW',
@@ -18,6 +20,8 @@ MARKET_POOL = [
     '2353.TW', '2323.TW', '2352.TW', '3260.TW', '6239.TW'
 ]
 
+# 設定快取：1分鐘內不要重複抓即時報價
+@st.cache_data(ttl=60)
 def get_realtime_quote(symbol):
     try:
         stock_id = symbol.split('.')[0]
@@ -30,11 +34,17 @@ def get_realtime_quote(symbol):
     except: pass
     return None
 
+# 設定快取：15分鐘內不要重複執行全市場掃描 (避免被鎖 IP)
+@st.cache_data(ttl=900)
 def screen_hot_stocks(limit=15):
     screened_list = []
     print("正在掃描市場熱門股...")
+    
     for symbol in MARKET_POOL:
         try:
+            # 🔥 關鍵降速：每次請求休息 0.25 秒
+            time.sleep(0.25)
+            
             ticker = yf.Ticker(symbol)
             hist = ticker.history(period="3mo", interval="1d")
             if len(hist) < 20: continue
@@ -42,10 +52,8 @@ def screen_hot_stocks(limit=15):
             ma20 = hist['Close'].rolling(window=20).mean().iloc[-1]
             current_price = hist['Close'].iloc[-1]
             
-            # 濾網 A：只做多頭排列
             if current_price < ma20: continue
                 
-            # 濾網 B：波動率 > 2%
             hist['Range_Pct'] = ((hist['High'] - hist['Low']) / hist['Close']) * 100
             avg_volatility = hist['Range_Pct'].tail(10).mean()
             
@@ -55,10 +63,12 @@ def screen_hot_stocks(limit=15):
                     'volatility': avg_volatility
                 })
         except: continue
+        
     screened_list.sort(key=lambda x: x['volatility'], reverse=True)
     return screened_list[:limit]
 
-# --- 🔥 寬鬆版：歷史回測 (過去 5 天) ---
+# 設定快取：1小時內不要重複抓歷史回測 (歷史數據今天不會變)
+@st.cache_data(ttl=3600)
 def backtest_past_week(symbol):
     ticker = yf.Ticker(symbol)
     df_all = ticker.history(period="5d", interval="1m")
@@ -97,10 +107,6 @@ def backtest_past_week(symbol):
             deviation = (close - vwap) / vwap
             if deviation > max_deviation: max_deviation = deviation
             
-            # 🔥 參數大鬆綁：
-            # 1. 強度 > 0.6% (原 1.5%)
-            # 2. 回檔 > 0.6% (原 2.0%)
-            # 3. 範圍 < 1.5% (原 1.0%)
             if not entry_time:
                 if max_deviation >= 0.006: 
                     if highest_high > 0 and close < highest_high * 0.994: 
@@ -141,8 +147,12 @@ def backtest_past_week(symbol):
         
     return daily_results
 
-# --- 🔥 寬鬆版：即時訊號 ---
-def get_orb_signals(symbol: str):
+# 設定快取：1分鐘內不要重複抓訊號
+@st.cache_data(ttl=60)
+def get_orb_signals(symbol):
+    # 加入微小延遲，防止手動頻繁刷新時被鎖
+    time.sleep(0.1) 
+    
     ticker = yf.Ticker(symbol)
     df = ticker.history(period="1d", interval="1m")
     df_daily = ticker.history(period="3mo", interval="1d")
@@ -187,7 +197,6 @@ def get_orb_signals(symbol: str):
         deviation = (close - vwap) / vwap
         if deviation > max_deviation: max_deviation = deviation
             
-        # 🔥 同步寬鬆參數
         if max_deviation >= 0.006:
             if highest_high > 0 and close < highest_high * 0.994:
                 if low <= vwap * 1.015:
@@ -224,7 +233,7 @@ def get_orb_signals(symbol: str):
     if entry_time:
         if exit_time: current_signal = "已出場"
         else: current_signal = f"持有中 {((current_price-entry_price)/entry_price)*100:.2f}%"
-    elif max_deviation < 0.006: current_signal = "波動不足 (<0.6%)"
+    elif max_deviation < 0.006: current_signal = "波動不足"
     
     stats = {
         "orb_high": 0, "orb_low": 0, "signal": current_signal,
@@ -237,6 +246,7 @@ def get_orb_signals(symbol: str):
 
 def backtest_strategy(symbol):
     try:
+        # 重用 get_orb_signals 邏輯，它現在有快取了，所以跑起來會很快
         df, stats = get_orb_signals(symbol)
         adr = stats.get('context', {}).get('adr_pct', 0)
         
