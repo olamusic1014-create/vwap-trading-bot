@@ -1,4 +1,5 @@
 import streamlit as st
+from PIL import Image  # 新增這個：用來讀取圖片
 import streamlit.components.v1 as components
 import plotly.graph_objects as go
 import pandas as pd
@@ -7,11 +8,23 @@ import analyzer
 from analyzer import get_orb_signals, screen_hot_stocks, backtest_past_week
 import twstock
 
-st.set_page_config(
-    page_title="智能選股戰情室", 
-    layout="wide",
-    page_icon="🤖"  # 🔥 這裡！加上這一行
-)
+# --- 設定頁面圖示 (修正版) ---
+# 請確保資料夾內有一張名為 "icon.png" 的圖片
+# 如果你的圖片檔名不一樣，請修改下面括號裡的檔名
+try:
+    icon_img = Image.open("icon.png") 
+    st.set_page_config(
+        page_title="智能選股戰情室", 
+        layout="wide",
+        page_icon=icon_img  # 使用圖片檔案作為圖示
+    )
+except FileNotFoundError:
+    # 萬一找不到圖片，會自動退回使用 Emoji，避免程式崩潰
+    st.set_page_config(
+        page_title="智能選股戰情室", 
+        layout="wide",
+        page_icon="🤖"
+    )
 
 if 'target_symbol' not in st.session_state: st.session_state['target_symbol'] = "2301"
 if 'backtest_results' not in st.session_state: st.session_state['backtest_results'] = None
