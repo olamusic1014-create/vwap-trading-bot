@@ -6,7 +6,7 @@ from analyzer import get_orb_signals, screen_hot_stocks
 import twstock
 import time
 
-# 1. 頁面設定 (移除頂部 padding，讓內容貼頂)
+# 1. 頁面設定
 st.set_page_config(page_title="戰情室", layout="wide", page_icon="🛡️")
 
 # 2. 注入 CSS：防閃爍 + 極致壓縮版面
@@ -28,9 +28,9 @@ st.markdown("""
         padding-left: 0.5rem !important;
         padding-right: 0.5rem !important;
     }
-    header { visibility: hidden !important; } /* 隱藏 Streamlit 頂部漢堡選單列 (可選) */
+    header { visibility: hidden !important; } 
     
-    /* 讓輸入框更緊湊 */
+    /* 輸入框緊湊化 */
     div[data-testid="stTextInput"] { margin-bottom: 0px !important; }
     div[data-testid="stSelectbox"] { margin-bottom: 0px !important; }
     div[data-testid="stCheckbox"] { margin-top: 5px !important; }
@@ -80,7 +80,7 @@ if st.session_state['pending_restart']:
         st.session_state['auto_refresh_state'] = True 
         st.rerun()
 
-# --- 頂部控制列 (緊湊佈局) ---
+# --- 頂部控制列 ---
 c1, c2, c3 = st.columns([1.2, 0.8, 1])
 
 with c1:
@@ -100,7 +100,6 @@ if user_input_val:
     if code and code != st.session_state['target_symbol']:
         st.session_state['target_symbol'] = code
 
-# 🔥 確保變數已定義 (防止 NameError)
 resolved_code, resolved_name = get_stock_code(st.session_state['target_symbol'])
 
 # 8. Fragment 儀表板
@@ -117,20 +116,8 @@ def display_dashboard():
             last_vwap = df['VWAP'].iloc[-1] if not df.empty and 'VWAP' in df.columns else 0
             price_color = "#FF5252" if current_price > last_vwap else "#00E676"
             
-            # 🔥 HUD 修復版：移除所有縮排，確保 HTML 正確渲染 🔥
-            # 並使用 display:flex 讓它變成單行
-            hud_html = f"""
-<div style="display: flex; justify-content: space-between; align-items: center; background-color: #262730; padding: 5px 10px; border-radius: 6px; border: 1px solid #444; margin-bottom: 5px; margin-top: 5px;">
-    <div style="display: flex; align-items: baseline; gap: 8px;">
-        <span style="font-size: 1rem; font-weight: bold; color: #FFF;">{resolved_code}</span>
-        <span style="font-size: 1.4rem; font-weight: bold; color: {price_color};">{current_price:.2f}</span>
-    </div>
-    <div style="text-align: right; line-height: 1;">
-        <div style="font-size: 0.75rem; color: #CCC;">VWAP <span style="color: yellow; font-weight: bold;">{last_vwap:.2f}</span></div>
-        <div style="font-size: 0.75rem; color: #888;">{stats['signal']}</div>
-    </div>
-</div>
-"""
+            # 🔥 HUD 修正：移除縮排，修復白色方塊問題 🔥
+            hud_html = f"""<div style="display: flex; justify-content: space-between; align-items: center; background-color: #262730; padding: 5px 10px; border-radius: 6px; border: 1px solid #444; margin-bottom: 5px; margin-top: 5px;"><div style="display: flex; align-items: baseline; gap: 8px;"><span style="font-size: 1rem; font-weight: bold; color: #FFF;">{resolved_code}</span><span style="font-size: 1.4rem; font-weight: bold; color: {price_color};">{current_price:.2f}</span></div><div style="text-align: right; line-height: 1;"><div style="font-size: 0.75rem; color: #CCC;">VWAP <span style="color: yellow; font-weight: bold;">{last_vwap:.2f}</span></div><div style="font-size: 0.75rem; color: #888;">{stats['signal']}</div></div></div>"""
             st.markdown(hud_html, unsafe_allow_html=True)
 
             # 繪圖
@@ -145,16 +132,27 @@ def display_dashboard():
             if stats.get('exit_time'):
                  fig.add_trace(go.Scatter(x=[stats['exit_time']], y=[stats['exit_price']], mode='markers', marker=dict(size=15, color='red', symbol='x', line=dict(width=2, color='white')), name="出場"))
 
-            # 🔥 圖表設定：縮放視角鎖定
+            # 🔥 圖表設定：圖例橫向排列 + 移至頂部 🔥
             fig.update_layout(
-                height=450, # 加大高度，因為省下了標題和HUD的空間
+                height=450, 
                 template="plotly_dark", 
                 plot_bgcolor='#0E1117', paper_bgcolor='#0E1117', font=dict(color='white'),
                 xaxis=dict(showgrid=True, gridcolor='#333', type='category'),
                 yaxis=dict(showgrid=True, gridcolor='#333'),
-                margin=dict(l=0, r=0, t=5, b=0),
-                uirevision=resolved_code, # 👈 鎖定縮放：只要代號沒變，縮放就不變
-                transition={'duration': 0} 
+                margin=dict(l=0, r=0, t=30, b=0), # t=30 留一點空間給上方的 Legend
+                uirevision=resolved_code, 
+                transition={'duration': 0},
+                
+                # 👇 這裡就是解決圖例佔位的關鍵
+                legend=dict(
+                    orientation="h",       # 變成橫向
+                    yanchor="bottom",
+                    y=1.02,                # 放在圖表區域的正上方 (不佔內部空間)
+                    xanchor="right",
+                    x=1,                   # 靠右對齊
+                    font=dict(size=10),    # 字體縮小
+                    bgcolor="rgba(0,0,0,0)" # 背景透明
+                )
             )
             
             st.plotly_chart(fig, use_container_width=True, key="live_chart_fragment", config={'displayModeBar': False})
@@ -167,8 +165,7 @@ if resolved_code:
 else:
     st.warning("請輸入股票代號")
 
-# --- 底部折疊區 (設定與選股) ---
-# 移到最下面，不佔用看盤視線
+# --- 底部折疊區 ---
 with st.expander("🛠️ 進階設定 / 全市場選股"):
     if is_key_loaded:
         st.success("✅ API Key 已載入")
