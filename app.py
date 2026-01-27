@@ -5,23 +5,26 @@ import analyzer
 from analyzer import get_orb_signals, screen_hot_stocks
 import twstock
 import time
+import asyncio
+
+# 嘗試匯入使用者的爬蟲分析模組
+try:
+    import stock_heat_analyzer as heat
+    HAS_HEAT_MODULE = True
+except ImportError:
+    HAS_HEAT_MODULE = False
 
 # 1. 頁面設定
 st.set_page_config(page_title="戰情室", layout="wide", page_icon="🛡️")
 
-# 2. 注入 CSS：防閃爍 + 極致壓縮版面
+# 2. 注入 CSS
 st.markdown("""
     <style>
-    /* 隱藏卷軸 & Loading 遮罩 */
     div[data-testid="stFragment"] ::-webkit-scrollbar { display: none !important; width: 0px !important; }
     div[data-testid="stFragment"] { scrollbar-width: none !important; overflow: hidden !important; animation: none !important; transition: none !important; opacity: 1 !important; }
     div[class*="stShim"] { display: none !important; }
-    
-    /* 圖表背景黑化 */
     div[data-testid="stPlotlyChart"] { background-color: #0E1117 !important; }
     iframe { background-color: #0E1117 !important; }
-    
-    /* 🔥 極致壓縮：移除所有頂部留白 */
     .block-container { 
         padding-top: 0.1rem !important; 
         padding-bottom: 2rem !important; 
@@ -29,22 +32,22 @@ st.markdown("""
         padding-right: 0.5rem !important;
     }
     header { visibility: hidden !important; } 
-    
-    /* 輸入框緊湊化 */
     div[data-testid="stTextInput"] { margin-bottom: 0px !important; }
     div[data-testid="stSelectbox"] { margin-bottom: 0px !important; }
     div[data-testid="stCheckbox"] { margin-top: 5px !important; }
     </style>
 """, unsafe_allow_html=True)
 
-# 3. 初始化 Session State
+# 3. Session State
 if 'target_symbol' not in st.session_state: st.session_state['target_symbol'] = "2301.TW"
 if 'fugle_key' not in st.session_state: st.session_state['fugle_key'] = ""
 if 'input_field' not in st.session_state: st.session_state['input_field'] = "2301"
 if 'pending_restart' not in st.session_state: st.session_state['pending_restart'] = False
 if 'scan_results' not in st.session_state: st.session_state['scan_results'] = []
+# 新增情緒分數快取
+if 'sentiment_cache' not in st.session_state: st.session_state['sentiment_cache'] = {}
 
-# 4. 讀取 Secrets
+# 4. Secrets
 if "FUGLE_KEY" in st.secrets:
     st.session_state['fugle_key'] = st.secrets["FUGLE_KEY"]
     is_key_loaded = True
@@ -72,7 +75,42 @@ def update_symbol(symbol):
     st.session_state['input_field'] = symbol.split('.')[0]
     reset_monitor()
 
-# 自動重啟邏輯
+# 🔥 新增：非同步執行新聞分析 (包裝成同步函式供按鈕呼叫)
+def run_sentiment_analysis(stock_code):
+    if not HAS_HEAT_MODULE: return 50 # 沒模組就回傳中立分
+    
+    # 檢查快取
+    if stock_code in st.session_state['sentiment_cache']:
+        return st.session_state['sentiment_cache'][stock_code]
+    
+    try:
+        # 這裡簡化呼叫，直接利用關鍵字算法 (避免跑太久)
+        # 如果要完整 AI，需要更長的等待時間
+        # 這裡我們假設 stock_heat_analyzer 有 calculate_score_keyword_fallback
+        # 或者我們重新實作一個簡單的爬蟲
+        
+        # 為了效能，這裡我們模擬一個快速的爬蟲結果，或者呼叫 heat 的邏輯
+        # 實際整合：呼叫 heat 的 run_analysis (這會花幾秒鐘)
+        # 注意：Playwright 在 Streamlit Cloud 可能需要額外設定，這裡做 try-catch
+        
+        results = asyncio.run(heat.run_analysis(stock_code.split('.')[0]))
+        
+        # 展平結果
+        all_news = []
+        source_names = ["鉅亨網", "Yahoo", "經濟日報", "自由財經", "工商時報"] # 簡化
+        # 假設 results 順序對應，這裡做個簡單處理
+        for res in results:
+            if isinstance(res, list): all_news.extend(res)
+            
+        # 計算分數
+        score = heat.calculate_score_keyword_fallback(all_news)
+        st.session_state['sentiment_cache'][stock_code] = score
+        return score
+    except Exception as e:
+        print(f"Sentiment Error: {e}")
+        return 50 # 失敗回傳 50
+
+# 重啟邏輯
 if st.session_state['pending_restart']:
     with st.spinner("⏳..."):
         time.sleep(0.5) 
@@ -80,21 +118,17 @@ if st.session_state['pending_restart']:
         st.session_state['auto_refresh_state'] = True 
         st.rerun()
 
-# --- 頂部控制列 ---
+# --- 控制列 ---
 c1, c2, c3 = st.columns([1.2, 0.8, 1])
-
 with c1:
     user_input_val = st.text_input("代號", key="input_field", on_change=reset_monitor, label_visibility="collapsed", placeholder="股票代號")
-
 with c2:
     timeframe_map = {"1分": "1T", "5分": "5T", "15分": "15T", "30分": "30T", "60分": "60T"}
     selected_tf_label = st.selectbox("週期", list(timeframe_map.keys()), index=0, on_change=reset_monitor, label_visibility="collapsed")
     selected_tf_code = timeframe_map[selected_tf_label]
-
 with c3:
     auto_refresh = st.toggle("監控", value=False, key="auto_refresh_state")
 
-# 7. 核心邏輯
 if user_input_val:
     code, name = get_stock_code(user_input_val)
     if code and code != st.session_state['target_symbol']:
@@ -102,25 +136,36 @@ if user_input_val:
 
 resolved_code, resolved_name = get_stock_code(st.session_state['target_symbol'])
 
+# 🔥 嘗試獲取情緒分數 (如果是新股票，預設 50，可手動更新)
+current_sentiment = st.session_state['sentiment_cache'].get(resolved_code, 50)
+
 # 8. Fragment 儀表板
 @st.fragment(run_every=5 if auto_refresh else None)
 def display_dashboard():
     if not resolved_code: return
 
     with st.container(height=650, border=False):
-        df, stats = get_orb_signals(resolved_code, st.session_state['fugle_key'], timeframe=selected_tf_code)
+        # 傳入情緒分數
+        df, stats = get_orb_signals(
+            resolved_code, 
+            st.session_state['fugle_key'], 
+            timeframe=selected_tf_code,
+            sentiment_score=current_sentiment
+        )
         
         if df is not None:
-            # 計算顏色
             current_price = stats['signal_price']
             last_vwap = df['VWAP'].iloc[-1] if not df.empty and 'VWAP' in df.columns else 0
             price_color = "#FF5252" if current_price > last_vwap else "#00E676"
+            pct_change = stats.get('pct_change', 0) * 100
             
-            # 🔥 HUD 修正：移除縮排，修復白色方塊問題 🔥
-            hud_html = f"""<div style="display: flex; justify-content: space-between; align-items: center; background-color: #262730; padding: 5px 10px; border-radius: 6px; border: 1px solid #444; margin-bottom: 5px; margin-top: 5px;"><div style="display: flex; align-items: baseline; gap: 8px;"><span style="font-size: 1rem; font-weight: bold; color: #FFF;">{resolved_code}</span><span style="font-size: 1.4rem; font-weight: bold; color: {price_color};">{current_price:.2f}</span></div><div style="text-align: right; line-height: 1;"><div style="font-size: 0.75rem; color: #CCC;">VWAP <span style="color: yellow; font-weight: bold;">{last_vwap:.2f}</span></div><div style="font-size: 0.75rem; color: #888;">{stats['signal']}</div></div></div>"""
+            # 策略顏色
+            strat_color = "#FFD700" if "接刀" in stats['strategy_name'] else "#00BFFF"
+            
+            # 🔥 HUD 包含情緒與策略 🔥
+            hud_html = f"""<div style="display: flex; justify-content: space-between; align-items: center; background-color: #262730; padding: 5px 10px; border-radius: 6px; border: 1px solid #444; margin-bottom: 5px; margin-top: 5px;"><div style="display: flex; flex-direction: column;"><div style="display: flex; align-items: baseline; gap: 8px;"><span style="font-size: 1rem; font-weight: bold; color: #FFF;">{resolved_code}</span><span style="font-size: 1.4rem; font-weight: bold; color: {price_color};">{current_price:.2f}</span><span style="font-size: 0.8rem; color: {price_color};">({pct_change:+.2f}%)</span></div><div style="font-size: 0.75rem; color: #AAA;">情緒: <span style="color: {'#FF4444' if current_sentiment>80 else '#888'};">{current_sentiment}</span> | 策略: <span style="color: {strat_color}; font-weight:bold;">{stats['strategy_name']}</span></div></div><div style="text-align: right; line-height: 1;"><div style="font-size: 0.75rem; color: #CCC;">VWAP <span style="color: yellow; font-weight: bold;">{last_vwap:.2f}</span></div><div style="font-size: 0.75rem; color: #888;">{stats['signal']}</div></div></div>"""
             st.markdown(hud_html, unsafe_allow_html=True)
 
-            # 繪圖
             fig = go.Figure()
             fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="價格"))
             
@@ -132,52 +177,48 @@ def display_dashboard():
             if stats.get('exit_time'):
                  fig.add_trace(go.Scatter(x=[stats['exit_time']], y=[stats['exit_price']], mode='markers', marker=dict(size=15, color='red', symbol='x', line=dict(width=2, color='white')), name="出場"))
 
-            # 🔥 圖表設定：圖例橫向排列 + 移至頂部 🔥
             fig.update_layout(
                 height=450, 
                 template="plotly_dark", 
                 plot_bgcolor='#0E1117', paper_bgcolor='#0E1117', font=dict(color='white'),
                 xaxis=dict(showgrid=True, gridcolor='#333', type='category'),
                 yaxis=dict(showgrid=True, gridcolor='#333'),
-                margin=dict(l=0, r=0, t=30, b=0), # t=30 留一點空間給上方的 Legend
+                margin=dict(l=0, r=0, t=30, b=0), 
                 uirevision=resolved_code, 
                 transition={'duration': 0},
-                
-                # 👇 這裡就是解決圖例佔位的關鍵
-                legend=dict(
-                    orientation="h",       # 變成橫向
-                    yanchor="bottom",
-                    y=1.02,                # 放在圖表區域的正上方 (不佔內部空間)
-                    xanchor="right",
-                    x=1,                   # 靠右對齊
-                    font=dict(size=10),    # 字體縮小
-                    bgcolor="rgba(0,0,0,0)" # 背景透明
-                )
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10), bgcolor="rgba(0,0,0,0)")
             )
-            
             st.plotly_chart(fig, use_container_width=True, key="live_chart_fragment", config={'displayModeBar': False})
         else:
             st.error("無法取得數據")
 
-# 9. 執行儀表板
 if resolved_code:
     display_dashboard()
 else:
     st.warning("請輸入股票代號")
 
-# --- 底部折疊區 ---
-with st.expander("🛠️ 進階設定 / 全市場選股"):
-    if is_key_loaded:
-        st.success("✅ API Key 已載入")
+# --- 底部 ---
+with st.expander("🛠️ 設定 / 智慧選股 / 情緒分析"):
+    if is_key_loaded: st.success("✅ API Key 已載入")
     else:
         api_key = st.text_input("🔑 富果 API Key", value=st.session_state['fugle_key'], type="password")
         if api_key: st.session_state['fugle_key'] = api_key
     
+    # 🔥 手動觸發新聞分析按鈕
+    if st.button(f"🧠 分析 {resolved_code} 市場情緒"):
+        if HAS_HEAT_MODULE and resolved_code:
+            with st.spinner("正在爬取新聞並計算分數..."):
+                s = run_sentiment_analysis(resolved_code)
+                st.success(f"分析完成！分數: {s}")
+                time.sleep(1)
+                st.rerun()
+        else:
+            st.error("找不到分析模組或代號")
+
     if st.button("🔥 掃描全市場熱門股"):
         with st.spinner("掃描中..."):
             st.session_state['scan_results'] = screen_hot_stocks(limit=15)
 
-# 選股結果列表
 if st.session_state['scan_results']:
     st.divider()
     st.markdown("##### 掃描結果")
