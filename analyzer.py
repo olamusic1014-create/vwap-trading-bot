@@ -6,286 +6,212 @@ import numpy as np
 import time
 import random
 import streamlit as st
+from fugle_marketdata import RestClient # 引入富果
 
 # --- 熱門股池 ---
 MARKET_POOL = [
-    '2330.TW', '2317.TW', '2454.TW', '2382.TW', '2303.TW', '2881.TW', '2891.TW', '2308.TW', '3711.TW', '3037.TW',
-    '3035.TW', '3017.TW', '2368.TW', '3231.TW', '3443.TW', '3661.TW', '6669.TW', '2376.TW', '2356.TW', '2301.TW',
-    '2603.TW', '2609.TW', '2615.TW', '2618.TW', '2610.TW', '2637.TW', 
-    '1513.TW', '1519.TW', '1503.TW', '1504.TW', '1609.TW', 
-    '3044.TW', '2383.TW', '6274.TW', '6213.TW', '2421.TW', '3013.TW', 
-    '8046.TW', '8069.TW', '3533.TW', '3529.TW', '5269.TW', '3653.TW', 
-    '2409.TW', '3481.TW', '6116.TW', '2481.TW', '3008.TW', 
-    '2363.TW', '2344.TW', '2449.TW', '2313.TW', '2324.TW', 
-    '3034.TW', '4961.TW', '4919.TW', '2458.TW', '3583.TW', 
-    '2353.TW', '2323.TW', '2352.TW', '3260.TW', '6239.TW'
+    '2330', '2317', '2454', '2382', '2303', '2881', '2891', '2308', '3711', '3037',
+    '3035', '3017', '2368', '3231', '3443', '3661', '6669', '2376', '2356', '2301',
+    '2603', '2609', '2615', '2618', '2610', '2637', 
+    '1513', '1519', '1503', '1504', '1609', 
+    '3044', '2383', '6274', '6213', '2421', '3013', 
+    '8046', '8069', '3533', '3529', '5269', '3653', 
+    '2409', '3481', '6116', '2481', '3008', 
+    '2363', '2344', '2449', '2313', '2324', 
+    '3034', '4961', '4919', '2458', '3583', 
+    '2353', '2323', '2352', '3260', '6239'
 ]
 
-@st.cache_data(ttl=60)
-def get_realtime_quote(symbol):
-    try:
-        stock_id = symbol.split('.')[0]
-        realtime_data = twstock.realtime.get(stock_id)
-        if realtime_data['success']:
-            info = realtime_data['realtime']
-            latest_price = info.get('latest_trade_price')
-            if latest_price and latest_price != '-':
-                return float(latest_price)
-    except: pass
-    return None
-
+# --- 1. 海選部隊：使用 Yahoo 進行大量掃描 (維持防鎖機制) ---
 @st.cache_data(ttl=900)
 def screen_hot_stocks(limit=15):
     screened_list = []
-    print("正在掃描市場熱門股...")
+    print("正在掃描市場熱門股 (Yahoo)...")
     
-    for symbol in MARKET_POOL:
-        # 隨機休息，避免機械式請求
-        time.sleep(random.uniform(0.2, 0.5))
+    for symbol_raw in MARKET_POOL:
+        symbol = f"{symbol_raw}.TW" # Yahoo 需要 .TW
+        time.sleep(random.uniform(0.1, 0.25)) # 稍微快一點，但保持禮貌
         
-        # 重試機制
-        retries = 2
-        for i in range(retries):
-            try:
-                # 🔥 這裡拿掉了 session，讓 yfinance 自動使用 curl_cffi
-                ticker = yf.Ticker(symbol)
-                hist = ticker.history(period="3mo", interval="1d")
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period="3mo", interval="1d")
+            
+            if len(hist) < 20: continue
+            
+            ma20 = hist['Close'].rolling(window=20).mean().iloc[-1]
+            current_price = hist['Close'].iloc[-1]
+            
+            if current_price < ma20: continue
                 
-                if len(hist) < 20: break
-                
-                ma20 = hist['Close'].rolling(window=20).mean().iloc[-1]
-                current_price = hist['Close'].iloc[-1]
-                
-                if current_price < ma20: break
-                    
-                hist['Range_Pct'] = ((hist['High'] - hist['Low']) / hist['Close']) * 100
-                avg_volatility = hist['Range_Pct'].tail(10).mean()
-                
-                if avg_volatility >= 2.0:
-                    screened_list.append({
-                        'symbol': symbol,
-                        'volatility': avg_volatility
-                    })
-                break 
-                
-            except Exception as e:
-                if i < retries - 1:
-                    time.sleep(1) # 失敗休息一下再試
-                else:
-                    continue 
+            hist['Range_Pct'] = ((hist['High'] - hist['Low']) / hist['Close']) * 100
+            avg_volatility = hist['Range_Pct'].tail(10).mean()
+            
+            if avg_volatility >= 2.0:
+                screened_list.append({
+                    'symbol': symbol,
+                    'volatility': avg_volatility
+                })
+        except: continue
         
     screened_list.sort(key=lambda x: x['volatility'], reverse=True)
     return screened_list[:limit]
 
-@st.cache_data(ttl=3600)
-def backtest_past_week(symbol):
+# --- 2. 特種部隊：使用 Fugle 進行精準打擊 (即時 K 線) ---
+def get_fugle_kline(symbol_id, api_key):
+    try:
+        client = RestClient(api_key=api_key)
+        stock = client.stock  # Initialize stock client
+        
+        # 抓取當日 K 線 (intraday candles)
+        # 富果免費版限制：只能抓近期的，但對當沖夠用了
+        candles = stock.intraday.candles(symbol=symbol_id)
+        
+        if not candles or 'data' not in candles:
+            return None
+        
+        data = candles['data']
+        if not data: return None
+
+        df = pd.DataFrame(data)
+        
+        # 整理格式以符合我們策略的要求
+        df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
+        
+        # 處理時間：富果回傳的是 UTC，要轉成台灣時間
+        df['Date'] = pd.to_datetime(df['date'])
+        df.set_index('Date', inplace=True)
+        df.index = df.index.tz_convert('Asia/Taipei')
+        
+        return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+    except Exception as e:
+        print(f"Fugle Error: {e}")
+        return None
+
+# --- 3. 備用方案：Yahoo 即時 (當沒有 API Key 時) ---
+@st.cache_data(ttl=30)
+def get_realtime_quote_yahoo(symbol):
     try:
         ticker = yf.Ticker(symbol)
-        df_all = ticker.history(period="5d", interval="1m")
-    except:
-        return []
-    
-    if df_all.empty: return []
+        price = ticker.fast_info.last_price
+        if price and not np.isnan(price): return float(price)
+    except: pass
+    return None
 
-    daily_results = []
-    grouped = df_all.groupby(df_all.index.date)
+# --- 主邏輯：策略訊號產生器 ---
+@st.cache_data(ttl=5) # 如果用 API，快取可以縮短到 5 秒，甚至更短
+def get_orb_signals(symbol_input, fugle_api_key=None):
+    # 處理代號格式
+    symbol_id = symbol_input.split('.')[0] # 2301
+    symbol_tw = f"{symbol_id}.TW"          # 2301.TW
     
-    for date, df in grouped:
-        if len(df) < 30: continue 
-
-        df['Cum_Vol'] = df['Volume'].cumsum()
-        df['Cum_Vol_Price'] = (df['Close'] * df['Volume']).cumsum()
-        df['VWAP'] = df['Cum_Vol_Price'] / df['Cum_Vol']
-        
-        entry_time = None
-        entry_price = None
-        exit_price = None
-        status = "NO_SIGNAL"
-        
-        max_deviation = 0.0
-        highest_high = 0.0
-        
-        start_time = df.index[0] + pd.Timedelta(minutes=15)
-        scan_data = df[df.index >= start_time]
-        
-        for t, row in scan_data.iterrows():
-            close = row['Close']
-            low = row['Low']
-            high = row['High']
-            open_p = row['Open']
-            vwap = row['VWAP']
-            
-            if high > highest_high: highest_high = high
-            deviation = (close - vwap) / vwap
-            if deviation > max_deviation: max_deviation = deviation
-            
-            if not entry_time:
-                if max_deviation >= 0.006: 
-                    if highest_high > 0 and close < highest_high * 0.994: 
-                        if low <= vwap * 1.015: 
-                            if close > open_p and close >= vwap: 
-                                entry_time = t
-                                entry_price = close
-            
-            if entry_time and t > entry_time:
-                stop_price = entry_price * 0.985 
-                if high >= entry_price * 1.015: stop_price = max(stop_price, entry_price * 1.005)
-                if high >= entry_price * 1.025: stop_price = max(stop_price, entry_price * 1.015)
-                
-                if low <= stop_price:
-                    exit_price = stop_price
-                    status = "WIN" if exit_price > entry_price else "LOSS"
-                    break
-        
-        if entry_time:
-            if not exit_price: 
-                exit_price = df['Close'].iloc[-1]
-                status = "WIN" if exit_price > entry_price * 1.004 else "LOSS"
-            
-            raw_pnl = ((exit_price - entry_price) / entry_price) * 100
-            net_pnl = raw_pnl - 0.4
-        else:
-            net_pnl = 0.0
-            status = "NO_SIGNAL"
-            
-        daily_results.append({
-            'date': date,
-            'symbol': symbol,
-            'status': status,
-            'pnl': round(net_pnl, 2),
-            'entry': round(entry_price, 2) if entry_price else 0,
-            'exit': round(exit_price, 2) if exit_price else 0
-        })
-        
-    return daily_results
-
-@st.cache_data(ttl=60)
-def get_orb_signals(symbol):
-    time.sleep(0.1) 
-    ticker = yf.Ticker(symbol)
+    df = None
+    source = "Yahoo (延遲/模擬)"
     
-    # 這裡如果不加 try-except，單次抓取失敗就會報錯
+    # A. 優先嘗試 Fugle (如果有 Key)
+    if fugle_api_key:
+        df = get_fugle_kline(symbol_id, fugle_api_key)
+        if df is not None and not df.empty:
+            source = "Fugle (真即時 API)"
+    
+    # B. 如果沒 Key 或 Fugle 失敗，使用 Yahoo + 人工補點
+    if df is None or df.empty:
+        try:
+            ticker = yf.Ticker(symbol_tw)
+            df = ticker.history(period="1d", interval="1m")
+            
+            # 嘗試補上最新價 (Stitching)
+            realtime_price = get_realtime_quote_yahoo(symbol_tw)
+            if not df.empty and realtime_price:
+                last_time = df.index[-1]
+                now = pd.Timestamp.now(tz='Asia/Taipei')
+                if (now - last_time).total_seconds() > 120:
+                    new_row = pd.DataFrame({
+                        'Open': [realtime_price], 'High': [realtime_price],
+                        'Low': [realtime_price], 'Close': [realtime_price], 'Volume': [0]
+                    }, index=[now])
+                    df = pd.concat([df, new_row])
+        except: pass
+
+    if df is None or df.empty:
+        return None, {"error": "無法取得數據", "source": "None"}
+
+    # --- 以下是策略運算 (通用邏輯) ---
+    # 取得日線趨勢 (這部分永遠用 Yahoo，節省 Fugle 額度)
     try:
-        df = ticker.history(period="1d", interval="1m")
-        df_daily = ticker.history(period="3mo", interval="1d")
+        ticker_d = yf.Ticker(symbol_tw)
+        df_daily = ticker_d.history(period="3mo", interval="1d")
+        
+        if not df_daily.empty and len(df_daily) >= 20:
+            df_daily['MA20'] = df_daily['Close'].rolling(window=20).mean()
+            prev = df_daily.iloc[-2]
+            trend = "Bullish" if prev['Close'] > prev['MA20'] else "Bearish"
+            df_daily['Range'] = (df_daily['High'] - df_daily['Low']) / df_daily['Close'] * 100
+            adr = df_daily['Range'].tail(5).mean()
+            context = {"trend": trend, "adr_pct": adr}
+        else:
+            context = {"trend": "Unknown", "adr_pct": 0}
     except:
-        return None, {"error": "Fetch failed"}
-    
-    context = {"trend": "Neutral", "ma20": 0, "gap_percent": 0.0, "adr_pct": 0.0}
-    if not df_daily.empty and len(df_daily) >= 20:
-        df_daily['MA20'] = df_daily['Close'].rolling(window=20).mean()
-        df_daily['Range_Pct'] = ((df_daily['High'] - df_daily['Low']) / df_daily['Close']) * 100
-        adr_pct = df_daily['Range_Pct'].tail(5).mean()
-        prev_day = df_daily.iloc[-2] if len(df_daily) >= 2 else df_daily.iloc[-1]
-        trend = "Bullish" if prev_day['Close'] > prev_day['MA20'] else "Bearish"
-        today_open = df['Open'].iloc[0] if not df.empty else 0
-        gap_pct = 0.0
-        if prev_day['Close'] > 0 and today_open > 0:
-            gap_pct = ((today_open - prev_day['Close']) / prev_day['Close']) * 100
-        context = {"trend": trend, "ma20": prev_day['MA20'], "gap_percent": gap_pct, "adr_pct": adr_pct}
+        context = {"trend": "Unknown", "adr_pct": 0}
 
-    if df.empty: return None, {"error": "No data found"}
-
+    # VWAP 計算
     df['Cum_Vol'] = df['Volume'].cumsum()
     df['Cum_Vol_Price'] = (df['Close'] * df['Volume']).cumsum()
     df['VWAP'] = df['Cum_Vol_Price'] / df['Cum_Vol']
 
-    market_open_time = df.index[0]
-    entry_time = None
-    entry_price = None
-    first_signal_type = None
-    max_deviation = 0.0 
-    highest_high = 0.0 
+    # 策略判斷
+    market_open = df.index[0]
+    start_scan = market_open + pd.Timedelta(minutes=15)
+    scan_data = df[df.index >= start_scan]
     
-    start_scan_time = market_open_time + pd.Timedelta(minutes=15)
-    scan_data = df[df.index >= start_scan_time]
+    entry_time, entry_price = None, None
+    exit_time, exit_price = None, None
+    max_dev = 0.0
+    high_h = 0.0
     
     for t, row in scan_data.iterrows():
-        vwap = row['VWAP']
-        close = row['Close']
-        low = row['Low']
-        high = row['High']
-        open_price = row['Open']
+        if pd.isna(row['VWAP']): continue
         
-        if high > highest_high: highest_high = high
-        deviation = (close - vwap) / vwap
-        if deviation > max_deviation: max_deviation = deviation
+        if row['High'] > high_h: high_h = row['High']
+        dev = (row['Close'] - row['VWAP']) / row['VWAP']
+        if dev > max_dev: max_dev = dev
             
-        if max_deviation >= 0.006:
-            if highest_high > 0 and close < highest_high * 0.994:
-                if low <= vwap * 1.015:
-                    if close > open_price and close >= vwap:
-                        entry_time = t
-                        entry_price = close
-                        first_signal_type = "VWAP_DIP_BUY"
-                        break
-
-    exit_time = None
-    exit_price = None
-    exit_type = None 
-    trailing_stop_history = []
-    
-    if entry_time:
-        current_stop_price = entry_price * 0.985 
-        trade_data = df[df.index > entry_time]
-        for t, row in trade_data.iterrows():
-            current_high = row['High']
-            current_low = row['Low']
-            trailing_stop_history.append((t, current_stop_price))
-            if current_high >= entry_price * 1.015: current_stop_price = max(current_stop_price, entry_price * 1.005)
-            if current_high >= entry_price * 1.025: current_stop_price = max(current_stop_price, entry_price * 1.015)
-            if current_low <= current_stop_price:
+        if not entry_time:
+            # 策略：強度 > 0.6%, 回檔 > 0.6%, 支撐 1.5%
+            if max_dev >= 0.006:
+                if high_h > 0 and row['Close'] < high_h * 0.994:
+                    if row['Low'] <= row['VWAP'] * 1.015:
+                        if row['Close'] > row['Open'] and row['Close'] >= row['VWAP']:
+                            entry_time = t
+                            entry_price = row['Close']
+        
+        elif t > entry_time:
+            # 出場：停損 1.5% 或 移動停利
+            stop = entry_price * 0.985
+            if row['High'] >= entry_price * 1.015: stop = max(stop, entry_price * 1.005)
+            if row['High'] >= entry_price * 1.025: stop = max(stop, entry_price * 1.015)
+            
+            if row['Low'] <= stop:
                 exit_time = t
-                exit_price = current_stop_price
-                exit_type = "WIN" if exit_price > entry_price else "LOSS"
+                exit_price = stop
                 break
-
-    realtime_price = get_realtime_quote(symbol)
-    current_price = realtime_price if realtime_price else df['Close'].iloc[-1]
     
-    current_signal = "等待訊號"
+    current_price = df['Close'].iloc[-1]
+    signal_status = "等待訊號"
     if entry_time:
-        if exit_time: current_signal = "已出場"
-        else: current_signal = f"持有中 {((current_price-entry_price)/entry_price)*100:.2f}%"
-    elif max_deviation < 0.006: current_signal = "波動不足"
-    
+        if exit_time: signal_status = "已出場"
+        else: signal_status = f"持有中 {((current_price-entry_price)/entry_price)*100:.2f}%"
+    elif max_dev < 0.006:
+        signal_status = "波動不足"
+
     stats = {
-        "orb_high": 0, "orb_low": 0, "signal": current_signal,
-        "signal_price": current_price, "entry_time": entry_time, "entry_price": entry_price,
-        "entry_type": first_signal_type, "exit_time": exit_time, "exit_price": exit_price,
-        "exit_type": exit_type, "context": context, "is_realtime": (realtime_price is not None),
-        "buffer_price": 0, "vwap_data": df['VWAP'], "stop_history": trailing_stop_history
+        "signal": signal_status, "signal_price": current_price,
+        "entry_time": entry_time, "entry_price": entry_price,
+        "exit_time": exit_time, "exit_price": exit_price,
+        "vwap_data": df['VWAP'], "source": source,
+        "context": context, "is_realtime": (source == "Fugle (真即時 API)")
     }
     return df, stats
 
-def backtest_strategy(symbol):
-    try:
-        df, stats = get_orb_signals(symbol)
-        adr = stats.get('context', {}).get('adr_pct', 0)
-        
-        if stats.get("error"): return {'symbol': symbol, 'status': 'ERROR', 'pnl': 0.0, 'adr': adr, 'signal_type': 'None'}
-        if not stats.get('entry_time'):
-             return {'symbol': symbol, 'status': 'NO_SIGNAL', 'pnl': 0.0, 'signal_type': 'None', 'adr': round(adr, 2)}
-
-        entry_price = stats['entry_price']
-        exit_price = stats.get('exit_price')
-        exit_type = stats.get('exit_type')
-        
-        status = "HOLD"
-        if exit_price:
-            status = "WIN" if exit_price > entry_price * 1.004 else "LOSS"
-            if "WIN" in str(exit_type): status = "WIN_TRAIL"
-        else:
-            exit_price = df['Close'].iloc[-1]
-
-        raw_pnl = ((exit_price - entry_price) / entry_price) * 100
-        net_pnl = raw_pnl - 0.4
-        final_status = "WIN" if net_pnl > 0 else "LOSS"
-        if "TRAIL" in status and net_pnl > 0: final_status = "WIN (Trail)"
-
-        return {
-            'symbol': symbol, 'status': final_status, 'pnl': round(net_pnl, 2),
-            'entry': round(entry_price, 2), 'exit': round(exit_price, 2), 'signal_type': stats['entry_type'], 'adr': round(adr, 2)
-        }
-    except:
-        return {'symbol': symbol, 'status': 'ERROR', 'pnl': 0.0, 'adr': 0, 'signal_type': 'None'}
+# 為了相容性，保留空函式
+def backtest_strategy(symbol): return None
+def backtest_past_week(symbol): return []

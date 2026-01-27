@@ -1,40 +1,17 @@
 import streamlit as st
-from PIL import Image  # 新增這個：用來讀取圖片
 import streamlit.components.v1 as components
 import plotly.graph_objects as go
 import pandas as pd
 import time
 import analyzer
-from analyzer import get_orb_signals, screen_hot_stocks, backtest_past_week
+from analyzer import get_orb_signals, screen_hot_stocks
 import twstock
 
-# --- 設定頁面圖示 (修正版) ---
-# 請確保資料夾內有一張名為 "icon.png" 的圖片
-# 如果你的圖片檔名不一樣，請修改下面括號裡的檔名
-try:
-    icon_img = Image.open("icon.png") 
-    st.set_page_config(
-        page_title="智能選股戰情室", 
-        layout="wide",
-        page_icon=icon_img  # 使用圖片檔案作為圖示
-    )
-except FileNotFoundError:
-    # 萬一找不到圖片，會自動退回使用 Emoji，避免程式崩潰
-    st.set_page_config(
-        page_title="智能選股戰情室", 
-        layout="wide",
-        page_icon="🤖"
-    )
+st.set_page_config(page_title="智能選股戰情室", layout="wide", page_icon="🛡️")
 
 if 'target_symbol' not in st.session_state: st.session_state['target_symbol'] = "2301"
-if 'backtest_results' not in st.session_state: st.session_state['backtest_results'] = None
-if 'history_results' not in st.session_state: st.session_state['history_results'] = None
-if 'scroll_to_top' not in st.session_state: st.session_state['scroll_to_top'] = False
+if 'fugle_key' not in st.session_state: st.session_state['fugle_key'] = ""
 if 'input_field' not in st.session_state: st.session_state['input_field'] = "2301"
-
-if st.session_state['scroll_to_top']:
-    components.html("""<script>window.parent.document.querySelector('section.main').scrollTo(0, 0);</script>""", height=0)
-    st.session_state['scroll_to_top'] = False
 
 def get_stock_code(user_input):
     user_input = user_input.strip()
@@ -45,165 +22,86 @@ def get_stock_code(user_input):
 
 def update_symbol(symbol):
     st.session_state['target_symbol'] = symbol
-    st.session_state['input_field'] = symbol 
-    st.session_state['scroll_to_top'] = True
+    st.session_state['input_field'] = symbol.split('.')[0]
 
-st.title("🛡️ VWAP 智能選股與回測系統 (高敏感度版)")
+st.title("🛡️ VWAP 智能戰情室 (Fugle 加速版)")
 
-st.sidebar.header("參數設定")
-user_input_val = st.sidebar.text_input("輸入股票代號", key="input_field")
-auto_refresh = st.sidebar.checkbox("🔄 啟用即時監控", value=False)
-run_btn = st.sidebar.button("開始分析 / 刷新")
+# --- 側邊欄 ---
+st.sidebar.header("設定")
+api_key = st.sidebar.text_input("🔑 富果 API Key (選填)", value=st.session_state['fugle_key'], type="password")
+if api_key: st.session_state['fugle_key'] = api_key
 
 st.sidebar.divider()
-st.sidebar.subheader("進階功能")
-c1, c2 = st.sidebar.columns(2)
-run_history = c1.button("📅 單股歷史回測 (近5日)")
-run_smart_scan = c2.button("🔥 全市場智能選股")
+user_input_val = st.sidebar.text_input("股票代號", key="input_field")
+auto_refresh = st.sidebar.checkbox("🔄 即時監控 (每5秒)", value=False)
+run_btn = st.sidebar.button("刷新")
 
-if user_input_val != st.session_state['target_symbol']:
-    st.session_state['target_symbol'] = user_input_val
-
-if run_history:
-    target = st.session_state['target_symbol']
-    if not target.endswith('.TW'): target += '.TW'
-    with st.spinner(f"正在回測 {target} 過去 5 天的表現..."):
-        hist_res = backtest_past_week(target)
-        st.session_state['history_results'] = hist_res
-
-if run_smart_scan:
-    with st.spinner("正在掃描市場熱門股..."):
+st.sidebar.divider()
+if st.sidebar.button("🔥 全市場智能選股"):
+    with st.spinner("正在掃描市場 (使用 Yahoo 數據)..."):
         top_candidates = screen_hot_stocks(limit=15)
-        if top_candidates:
-            scan_codes = [x['symbol'] for x in top_candidates]
-            results = []
-            bar = st.progress(0)
-            for i, t in enumerate(scan_codes):
-                res = analyzer.backtest_strategy(t)
-                if res['status'] != 'ERROR': results.append(res)
-                bar.progress((i+1)/len(scan_codes))
-            st.session_state['backtest_results'] = results
+        st.session_state['scan_results'] = top_candidates
 
+if user_input_val:
+    code, name = get_stock_code(user_input_val)
+    if code and code != st.session_state['target_symbol']:
+        st.session_state['target_symbol'] = code
+
+# --- 主畫面 ---
 resolved_code, resolved_name = get_stock_code(st.session_state['target_symbol'])
 
 if not resolved_code:
-    st.error("無效的股票代號")
+    st.error("無效代號")
 else:
-    # --- 歷史回測結果區塊 ---
-    if st.session_state['history_results']:
-        st.subheader(f"📅 {resolved_name} 近 5 日策略績效")
-        df_hist = pd.DataFrame(st.session_state['history_results'])
-        
-        if not df_hist.empty:
-            traded_days = df_hist[~df_hist['status'].isin(['NO_SIGNAL', 'SKIPPED'])]
-            
-            if not traded_days.empty:
-                total_trades = len(traded_days)
-                win_count = len(traded_days[traded_days['status'] == 'WIN'])
-                win_rate = (win_count / total_trades * 100)
-                total_pnl = traded_days['pnl'].sum()
-                
-                m1, m2, m3 = st.columns(3)
-                m1.metric("有效交易天數", total_trades)
-                m2.metric("週間勝率", f"{win_rate:.1f}%")
-                m3.metric("週間總損益", f"{total_pnl:.2f}%", delta_color="normal")
-                
-                def highlight_row(row):
-                    if row['status'] == 'WIN': 
-                        return ['background-color: #198754; color: white'] * len(row)
-                    if row['status'] == 'LOSS': 
-                        return ['background-color: #DC3545; color: white'] * len(row)
-                    return [''] * len(row)
-
-                st.dataframe(
-                    traded_days.style.apply(highlight_row, axis=1)
-                    .format({'pnl': "{:.2f}%", 'entry': "{:.2f}", 'exit': "{:.2f}"})
-                )
-            else:
-                st.info("過去 5 天無符合進場條件的交易 (NO_SIGNAL)。")
-        else:
-            st.info("無法取得足夠的歷史資料。")
-        st.divider()
-
-    # --- 即時圖表 ---
-    df, stats = get_orb_signals(resolved_code)
+    # 呼叫 analyzer，傳入 API Key
+    df, stats = get_orb_signals(resolved_code, st.session_state['fugle_key'])
+    
     if df is not None:
-        st.subheader(f"📊 {resolved_name} 當日走勢")
-        live_tag = "🔴 LIVE" if stats.get('is_realtime') else "⚠️ DELAYED"
-        st.caption(f"即時報價: {stats['signal_price']:.2f} ({live_tag})")
+        st.subheader(f"📊 {resolved_name} ({resolved_code})")
         
+        # 顯示資料來源狀態
+        src = stats.get('source', 'Unknown')
+        src_color = "#00FF00" if "Fugle" in src else "orange"
+        st.markdown(f"**資料來源:** <span style='color:{src_color}; font-weight:bold'>{src}</span>", unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("目前股價", f"{stats['signal_price']:.2f}")
+        col2.metric("VWAP", f"{df['VWAP'].iloc[-1]:.2f}")
+        col3.metric("訊號狀態", stats['signal'])
+
+        # 繪圖
         fig = go.Figure()
         fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="價格"))
-        if 'vwap_data' in stats:
-            fig.add_trace(go.Scatter(x=df.index, y=stats['vwap_data'], mode='lines', line=dict(color='yellow', width=2), name="VWAP"))
+        fig.add_trace(go.Scatter(x=df.index, y=stats['vwap_data'], mode='lines', line=dict(color='yellow', width=2), name="VWAP"))
         
-        if stats.get('entry_time'):
+        if stats['entry_time']:
             fig.add_trace(go.Scatter(x=[stats['entry_time']], y=[stats['entry_price']], mode='markers', marker=dict(size=15, color='#FFD700'), name="買進"))
-        
-        # 🔥 修正出場標記顏色：紅色填充 + 白色邊框
-        if stats.get('exit_time'):
-            fig.add_trace(go.Scatter(
-                x=[stats['exit_time']], 
-                y=[stats['exit_price']], 
-                mode='markers', 
-                marker=dict(size=15, color='red', symbol='x', line=dict(width=2, color='white')), # 改這裡
-                name="出場"
-            ))
+        if stats['exit_time']:
+             fig.add_trace(go.Scatter(x=[stats['exit_time']], y=[stats['exit_price']], mode='markers', marker=dict(size=15, color='red', symbol='x', line=dict(width=2, color='white')), name="出場"))
 
-        # 🔥 修正圖表背景：強制使用深色背景
         fig.update_layout(
-            height=450, 
-            template="plotly_dark", 
-            plot_bgcolor='#0E1117', # 圖表區域背景黑
-            paper_bgcolor='#0E1117', # 畫布背景黑
-            font=dict(color='white'), # 字體白
-            xaxis=dict(showgrid=True, gridcolor='#333'), # 網格線深灰
-            yaxis=dict(showgrid=True, gridcolor='#333'), 
+            height=450, template="plotly_dark", 
+            plot_bgcolor='#0E1117', paper_bgcolor='#0E1117', font=dict(color='white'),
+            xaxis=dict(showgrid=True, gridcolor='#333'), yaxis=dict(showgrid=True, gridcolor='#333'),
             margin=dict(l=0, r=0, t=30, b=0)
         )
         st.plotly_chart(fig, use_container_width=True)
-
-# --- 智能選股列表 ---
-if st.session_state['backtest_results']:
-    st.divider()
-    st.header("🔥 智能篩選結果 (僅顯示有效交易)")
-    df_res = pd.DataFrame(st.session_state['backtest_results'])
-    
-    valid_trades = df_res[~df_res['status'].isin(['NO_SIGNAL', 'SKIPPED_LOW_VOL', 'SKIPPED'])]
-    
-    if not valid_trades.empty:
-        total = len(valid_trades)
-        wins = len(valid_trades[valid_trades['status'].str.contains('WIN')])
-        win_rate = (wins / total) * 100
-        avg_pnl = valid_trades['pnl'].mean()
         
-        m1, m2, m3 = st.columns(3)
-        m1.metric("有效交易次數", total)
-        m2.metric("勝率", f"{win_rate:.1f}%")
-        m3.metric("平均報酬", f"{avg_pnl:.2f}%")
-        
-        st.markdown("---")
-        cols = st.columns([1.5, 2, 1.5, 1.5, 2, 1])
-        cols[0].write("**代號**")
-        cols[1].write("**狀態**")
-        cols[2].write("**損益**")
-        cols[3].write("**波動率**")
-        cols[4].write("**訊號**")
-        cols[5].write("**動作**")
-        st.markdown("---")
+        # 自動刷新邏輯
+        if auto_refresh:
+            time.sleep(5) # 富果免費版限制每分鐘 60 次，5秒一次很安全
+            st.rerun()
 
-        for index, row in valid_trades.iterrows():
-            c1, c2, c3, c4, c5, c6 = st.columns([1.5, 2, 1.5, 1.5, 2, 1])
-            c1.write(row['symbol'])
-            
-            status = row['status']
-            color = "#00FF00" if "WIN" in status else "#FF4B4B"
-            c2.markdown(f"<span style='color:{color}'>{status}</span>", unsafe_allow_html=True)
-            c3.write(f"{row['pnl']:.2f}%")
-            c4.write(f"{row.get('adr', 0):.2f}%")
-            c5.write(row['signal_type'])
-            
-            target = row['symbol'].split('.')[0]
-            c6.button("🔍", key=f"btn_{row['symbol']}", on_click=update_symbol, args=(target,))
     else:
-        st.info("即使在寬鬆條件下，今日篩選的強勢股仍無進場訊號 (可能全數直接噴出無回檔)。")
+        st.error(f"無法取得數據 (Source: {stats.get('source')})")
+
+# --- 顯示選股結果 ---
+if 'scan_results' in st.session_state and st.session_state['scan_results']:
+    st.divider()
+    st.subheader("🔥 智能選股結果")
+    for item in st.session_state['scan_results']:
+        c1, c2, c3 = st.columns([2, 2, 1])
+        c1.write(item['symbol'])
+        c2.write(f"波動率: {item['volatility']:.2f}%")
+        target = item['symbol'].split('.')[0]
+        c3.button("🔍", key=f"btn_{item['symbol']}", on_click=update_symbol, args=(f"{target}.TW",))
