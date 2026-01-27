@@ -131,31 +131,41 @@ def calculate_score_keyword_fallback(news_list):
             if w in txt: score -= 5
     return max(0, min(100, score))
 
-# AI 評分 (🔥 強力診斷版：會回傳真實錯誤訊息)
+# AI 評分 (🔥 全自動切換模型版)
 def analyze_with_gemini_requests(api_key, stock_name, news_data):
     txt = "\n".join([f"{i+1}. [{n['source']}] {n['title']}" for i, n in enumerate(news_data)])
     prompt = f"分析「{stock_name}」最新新聞情緒(0-100分)。新聞：\n{txt}\n\n格式：\nSCORE: [分數]\nSUMMARY: [簡短總結]"
     
-    # 優先使用 Flash 模型 (速度快、容錯高)
-    model = "models/gemini-1.5-flash"
-    url = f"https://generativelanguage.googleapis.com/v1beta/{model}:generateContent?key={api_key}"
-    
-    try:
-        res = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=30)
-        
-        # 成功
-        if res.status_code == 200:
-            try:
+    # 定義模型清單：優先嘗試 Flash，失敗就換 Pro
+    candidate_models = [
+        "models/gemini-1.5-flash",
+        "models/gemini-1.5-pro",
+        "models/gemini-pro"
+    ]
+
+    last_error = ""
+
+    for model in candidate_models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/{model}:generateContent?key={api_key}"
+        try:
+            res = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=30)
+            
+            if res.status_code == 200:
+                # 成功！
                 content = res.json()['candidates'][0]['content']['parts'][0]['text']
                 match = re.search(r"SCORE:\s*(\d+)", content)
-                return int(match.group(1)) if match else 50, content, model
-            except:
-                return None, "JSON 解析失敗", "error"
-        else:
-            # 🔥 失敗時，抓取 Google 回傳的詳細錯誤
-            error_msg = f"Google 拒絕連線 (代碼 {res.status_code}): {res.text[:200]}"
-            print(error_msg)
-            return None, error_msg, "error"
+                score = int(match.group(1)) if match else 50
+                return score, content, model # 回傳成功結果
             
-    except Exception as e:
-        return None, f"連線異常: {str(e)}", "error"
+            elif res.status_code == 404:
+                # 找不到這個模型，嘗試下一個
+                continue
+            else:
+                last_error = f"Error {res.status_code}: {res.text[:100]}"
+                
+        except Exception as e:
+            last_error = str(e)
+            continue
+            
+    # 如果試了所有模型都失敗
+    return None, f"所有模型皆失敗。最後錯誤: {last_error}", "error"
