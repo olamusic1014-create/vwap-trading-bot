@@ -1,8 +1,6 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import plotly.graph_objects as go
 import pandas as pd
-import time
 import analyzer
 from analyzer import get_orb_signals, screen_hot_stocks
 import twstock
@@ -60,8 +58,8 @@ timeframe_map = {
 selected_tf_label = st.sidebar.selectbox("K 線週期", list(timeframe_map.keys()), index=0)
 selected_tf_code = timeframe_map[selected_tf_label]
 
-# 🔥 改用 run_every 參數，所以這裡只需要一個開關
-auto_refresh = st.sidebar.toggle("🔄 啟用即時監控", value=False)
+# 即時監控開關
+auto_refresh = st.sidebar.toggle("🔄 啟用即時監控 (每5秒)", value=False)
 
 st.sidebar.divider()
 if st.sidebar.button("🔥 全市場智能選股"):
@@ -80,13 +78,14 @@ resolved_code, resolved_name = get_stock_code(st.session_state['target_symbol'])
 if not resolved_code:
     st.error(f"無效代號: {st.session_state['target_symbol']}")
 
-# 🔥 神奇魔法：使用 @st.fragment 建立獨立刷新區塊
-# 根據 auto_refresh 的狀態決定刷新頻率：如果是 True 就每 5 秒刷一次，False 就不自動刷
+# 🔥 防閃爍核心：
+# 1. 使用 run_every 參數自動計時 (如果 auto_refresh 為 True，則 5秒一次；否則不計時)
+# 2. 函式內部絕對不要寫 st.rerun() 或 time.sleep()
 @st.fragment(run_every=5 if auto_refresh else None)
 def display_dashboard():
     if not resolved_code: return
 
-    # 這裡的代碼只會在 fragment 內部執行，不會導致整個頁面重整
+    # 獲取數據
     df, stats = get_orb_signals(resolved_code, st.session_state['fugle_key'], timeframe=selected_tf_code)
     
     if df is not None:
@@ -107,14 +106,14 @@ def display_dashboard():
 
         fig = go.Figure()
         
-        # 繪製 K 線
+        # K 線
         fig.add_trace(go.Candlestick(
             x=df.index, 
             open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], 
             name="價格"
         ))
         
-        # 繪製 VWAP
+        # VWAP
         if 'vwap_data' in stats:
             fig.add_trace(go.Scatter(
                 x=df.index, y=stats['vwap_data'], 
@@ -122,23 +121,25 @@ def display_dashboard():
                 name="VWAP"
             ))
         
-        # 標記
+        # 買賣點
         if stats.get('entry_time'):
             fig.add_trace(go.Scatter(x=[stats['entry_time']], y=[stats['entry_price']], mode='markers', marker=dict(size=15, color='#FFD700'), name="買進"))
         if stats.get('exit_time'):
              fig.add_trace(go.Scatter(x=[stats['exit_time']], y=[stats['exit_price']], mode='markers', marker=dict(size=15, color='red', symbol='x', line=dict(width=2, color='white')), name="出場"))
 
-        # 🔥 關鍵防閃爍：加入 uirevision
-        # 這樣當數據更新時，Plotly 不會重置縮放狀態和相機視角
+        # 🔥 圖表設定：鎖定 UI 狀態，避免重繪時抖動
         fig.update_layout(
             height=450, template="plotly_dark", 
             plot_bgcolor='#0E1117', paper_bgcolor='#0E1117', font=dict(color='white'),
             xaxis=dict(showgrid=True, gridcolor='#333', type='category'),
             yaxis=dict(showgrid=True, gridcolor='#333'),
             margin=dict(l=0, r=0, t=30, b=0),
-            uirevision='constant' # 👈 這行是關鍵！鎖定 UI 狀態
+            uirevision='constant' # 鎖定視角
         )
-        st.plotly_chart(fig, use_container_width=True)
+        
+        # 🔥 加入 key 參數，讓 Streamlit 知道這是同一個圖表，只更新數據不重建元件
+        st.plotly_chart(fig, use_container_width=True, key="main_chart")
+        
     else:
         st.error(f"無法取得數據 (Source: {stats.get('source')})")
 
@@ -146,7 +147,7 @@ def display_dashboard():
 if resolved_code:
     display_dashboard()
 
-# --- 顯示選股結果 (放在 fragment 外面，不需要一直刷新) ---
+# --- 顯示選股結果 ---
 if 'scan_results' in st.session_state and st.session_state['scan_results']:
     st.divider()
     st.subheader("🔥 智能選股結果")
