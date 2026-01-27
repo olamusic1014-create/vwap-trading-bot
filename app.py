@@ -8,29 +8,41 @@ import time
 
 st.set_page_config(page_title="智能選股戰情室", layout="wide", page_icon="🛡️")
 
-# 🔥🔥🔥 針對卷軸 (Scrollbar) 與閃爍的 CSS 修復 🔥🔥🔥
+# 🔥🔥🔥 終極 CSS 優化：卷軸隱藏 + 背景染黑 (防白光閃爍) 🔥🔥🔥
 st.markdown("""
     <style>
-    /* 1. 隱藏 Fragment 內的所有卷軸 (關鍵！解決抖動) */
+    /* 1. 隱藏卷軸，防止版面抖動 */
     div[data-testid="stFragment"] {
         overflow: hidden !important;
-        animation: none !important;
-        transition: none !important;
     }
-    
-    /* 2. 針對 Chrome/Safari/Edge 的卷軸隱藏語法 */
     div[data-testid="stFragment"] ::-webkit-scrollbar {
         display: none !important;
         width: 0px !important;
     }
 
-    /* 3. 強制鎖定 Plotly 圖表容器，防止高度坍塌 */
+    /* 2. 殺死 Streamlit 的載入動畫 (變灰效果) */
+    div[data-testid="stFragment"] {
+        animation: none !important;
+        transition: none !important;
+        opacity: 1 !important;
+    }
+    /* 隱藏載入時的灰色遮罩 (stShim) */
+    div[class*="stShim"] {
+        display: none !important;
+    }
+
+    /* 3. 關鍵防閃爍：強制將圖表容器背景設為深色 */
+    /* 這樣就算圖表重載，也不會閃出白光 */
     div[data-testid="stPlotlyChart"] {
+        background-color: #0E1117 !important;
         width: 100% !important;
         overflow: hidden !important;
     }
+    iframe {
+        background-color: #0E1117 !important;
+    }
     
-    /* 4. 消除 Streamlit 預設的元件間距，減少版面跳動 */
+    /* 4. 固定頂部距離 */
     .block-container {
         padding-top: 2rem !important;
     }
@@ -131,9 +143,6 @@ if user_input_val:
     if code and code != st.session_state['target_symbol']:
         st.session_state['target_symbol'] = code
 
-# --- 主畫面邏輯 ---
-resolved_code, resolved_name = get_stock_code(st.session_state['target_symbol'])
-
 if not resolved_code:
     st.error(f"無效代號: {st.session_state['target_symbol']}")
 
@@ -142,7 +151,7 @@ if not resolved_code:
 def display_dashboard():
     if not resolved_code: return
 
-    # 🔥 關鍵調整：把容器高度設大一點 (650)，確保有足夠空間
+    # 使用固定高度容器
     with st.container(height=650, border=False):
         
         df, stats = get_orb_signals(resolved_code, st.session_state['fugle_key'], timeframe=selected_tf_code)
@@ -157,7 +166,6 @@ def display_dashboard():
             src_color = "#00FF00" if "Fugle" in src else "orange"
             st.markdown(f"**資料來源:** <span style='color:{src_color}; font-weight:bold'>{src}</span>", unsafe_allow_html=True)
             
-            # 指標區域
             col1, col2, col3 = st.columns(3)
             col1.metric("目前股價", f"{stats['signal_price']:.2f}")
             last_vwap = df['VWAP'].iloc[-1] if not df.empty and 'VWAP' in df.columns else 0
@@ -175,9 +183,9 @@ def display_dashboard():
             if stats.get('exit_time'):
                  fig.add_trace(go.Scatter(x=[stats['exit_time']], y=[stats['exit_price']], mode='markers', marker=dict(size=15, color='red', symbol='x', line=dict(width=2, color='white')), name="出場"))
 
-            # 🔥 關鍵調整：把圖表高度稍微改小 (380)，留出下方緩衝區，避免觸發卷軸
+            # 🔥 圖表設定：高度 380，鎖定 UI，關閉動畫
             fig.update_layout(
-                height=380, 
+                height=380,
                 template="plotly_dark", 
                 plot_bgcolor='#0E1117', paper_bgcolor='#0E1117', font=dict(color='white'),
                 xaxis=dict(showgrid=True, gridcolor='#333', type='category'),
@@ -187,7 +195,13 @@ def display_dashboard():
                 transition={'duration': 0} 
             )
             
-            st.plotly_chart(fig, use_container_width=True, key="live_chart_fragment")
+            # 🔥 關閉 displayModeBar 減少渲染負擔
+            st.plotly_chart(
+                fig, 
+                use_container_width=True, 
+                key="live_chart_fragment",
+                config={'displayModeBar': False} 
+            )
             
         else:
             st.error(f"無法取得數據 (Source: {stats.get('source')})")
