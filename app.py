@@ -7,7 +7,7 @@ import twstock
 import time
 import asyncio
 
-# 🔥 嘗試匯入爬蟲模組 (捕捉錯誤)
+# 🔥 嘗試匯入爬蟲模組
 HAS_HEAT_MODULE = False
 HEAT_ERROR = ""
 try:
@@ -19,7 +19,7 @@ except Exception as e:
 # 1. 頁面設定
 st.set_page_config(page_title="戰情室", layout="wide", page_icon="🛡️")
 
-# 2. 注入 CSS (手機版優化 & 防閃爍)
+# 2. 注入 CSS
 st.markdown("""
     <style>
     div[data-testid="stFragment"] ::-webkit-scrollbar { display: none !important; width: 0px !important; }
@@ -27,12 +27,7 @@ st.markdown("""
     div[class*="stShim"] { display: none !important; }
     div[data-testid="stPlotlyChart"] { background-color: #0E1117 !important; }
     iframe { background-color: #0E1117 !important; }
-    .block-container { 
-        padding-top: 0.1rem !important; 
-        padding-bottom: 2rem !important; 
-        padding-left: 0.5rem !important;
-        padding-right: 0.5rem !important;
-    }
+    .block-container { padding-top: 0.1rem !important; }
     header { visibility: hidden !important; } 
     div[data-testid="stTextInput"] { margin-bottom: 0px !important; }
     div[data-testid="stSelectbox"] { margin-bottom: 0px !important; }
@@ -75,12 +70,11 @@ def update_symbol(symbol):
     st.session_state['input_field'] = symbol.split('.')[0]
     reset_monitor()
 
-# 🔥 強力除錯版分析函式
+# 🔥 AI 分析函式
 def run_sentiment_analysis_debug(stock_code):
     if not HAS_HEAT_MODULE: 
         st.error(f"❌ 模組匯入失敗: {HEAT_ERROR}")
-        st.info("💡 請確認 stock_heat_analyzer.py 內容正確且無 UI 代碼")
-        return 50
+        return None # 失敗回傳 None
     
     try:
         # 1. 爬取新聞
@@ -92,8 +86,8 @@ def run_sentiment_analysis_debug(stock_code):
         st.toast(f"📰 抓到 {len(all_news)} 則新聞")
         
         if len(all_news) == 0:
-            st.warning("⚠️ 沒抓到任何新聞，使用預設分數")
-            return 50
+            st.warning("⚠️ 沒抓到新聞")
+            return 50 # 沒新聞時暫給中立分，但通常會顯示警告
 
         # 3. 呼叫 AI
         score = 50
@@ -108,7 +102,6 @@ def run_sentiment_analysis_debug(stock_code):
                 st.error(f"❌ AI 分析失敗: {ai_report}")
                 score = heat.calculate_score_keyword_fallback(all_news)
         else:
-            st.warning("⚠️ 沒設定 Gemini Key，使用關鍵字評分")
             score = heat.calculate_score_keyword_fallback(all_news)
             
         st.session_state['sentiment_cache'][stock_code] = score
@@ -116,7 +109,7 @@ def run_sentiment_analysis_debug(stock_code):
 
     except Exception as e:
         st.error(f"❌ 執行錯誤: {str(e)}")
-        return 50
+        return None
 
 # 重啟邏輯
 if st.session_state['pending_restart']:
@@ -144,8 +137,8 @@ if user_input_val:
 
 resolved_code, resolved_name = get_stock_code(st.session_state['target_symbol'])
 
-# 獲取情緒分數 (預設 50)
-current_sentiment = st.session_state['sentiment_cache'].get(resolved_code, 50)
+# 🚀 修改點 1: 預設情緒為 None (未分析)，而不是 50
+current_sentiment = st.session_state['sentiment_cache'].get(resolved_code, None)
 
 # 8. Fragment 儀表板
 @st.fragment(run_every=5 if auto_refresh else None)
@@ -153,23 +146,39 @@ def display_dashboard():
     if not resolved_code: return
 
     with st.container(height=650, border=False):
+        # 為了計算策略，如果未分析，我們暫時傳入 50 避免計算錯誤，但在顯示層擋掉
+        calc_score = current_sentiment if current_sentiment is not None else 50
+        
         df, stats = get_orb_signals(
             resolved_code, 
             FUGLE_KEY, 
             timeframe=selected_tf_code,
-            sentiment_score=current_sentiment
+            sentiment_score=calc_score
         )
         
         if df is not None:
+            # 🚀 修改點 2: 如果尚未分析 (None)，強制隱藏所有進出場訊號
+            if current_sentiment is None:
+                stats['entry_time'] = None
+                stats['exit_time'] = None
+                stats['signal'] = "等待 AI 分析..."
+                stats['strategy_name'] = "尚未啟動戰略"
+                
+                sentiment_display = "未分析"
+                sentiment_color = "#9E9E9E" # 灰色
+                strat_color = "#9E9E9E"
+            else:
+                sentiment_display = str(current_sentiment)
+                sentiment_color = "#FF4444" if current_sentiment > 60 else ("#00E676" if current_sentiment < 40 else "#888")
+                strat_color = "#FFD700" if "接刀" in stats['strategy_name'] else "#00BFFF"
+
             current_price = stats['signal_price']
             last_vwap = df['VWAP'].iloc[-1] if not df.empty and 'VWAP' in df.columns else 0
             price_color = "#FF5252" if current_price > last_vwap else "#00E676"
             pct_change = stats.get('pct_change', 0) * 100
             
-            strat_color = "#FFD700" if "接刀" in stats['strategy_name'] else "#00BFFF"
-            sentiment_color = "#FF4444" if current_sentiment > 80 else ("#00BFFF" if current_sentiment < 40 else "#888")
-            
-            hud_html = f"""<div style="display: flex; justify-content: space-between; align-items: center; background-color: #262730; padding: 5px 10px; border-radius: 6px; border: 1px solid #444; margin-bottom: 5px; margin-top: 5px;"><div style="display: flex; flex-direction: column;"><div style="display: flex; align-items: baseline; gap: 8px;"><span style="font-size: 1rem; font-weight: bold; color: #FFF;">{resolved_code}</span><span style="font-size: 1.4rem; font-weight: bold; color: {price_color};">{current_price:.2f}</span><span style="font-size: 0.8rem; color: {price_color};">({pct_change:+.2f}%)</span></div><div style="font-size: 0.75rem; color: #AAA;">情緒: <span style="color: {sentiment_color}; font-weight:bold;">{current_sentiment}</span> | 策略: <span style="color: {strat_color}; font-weight:bold;">{stats['strategy_name']}</span></div></div><div style="text-align: right; line-height: 1;"><div style="font-size: 0.75rem; color: #CCC;">VWAP <span style="color: yellow; font-weight: bold;">{last_vwap:.2f}</span></div><div style="font-size: 0.75rem; color: #888;">{stats['signal']}</div></div></div>"""
+            # HUD 顯示邏輯更新
+            hud_html = f"""<div style="display: flex; justify-content: space-between; align-items: center; background-color: #262730; padding: 5px 10px; border-radius: 6px; border: 1px solid #444; margin-bottom: 5px; margin-top: 5px;"><div style="display: flex; flex-direction: column;"><div style="display: flex; align-items: baseline; gap: 8px;"><span style="font-size: 1rem; font-weight: bold; color: #FFF;">{resolved_code}</span><span style="font-size: 1.4rem; font-weight: bold; color: {price_color};">{current_price:.2f}</span><span style="font-size: 0.8rem; color: {price_color};">({pct_change:+.2f}%)</span></div><div style="font-size: 0.75rem; color: #AAA;">情緒: <span style="color: {sentiment_color}; font-weight:bold;">{sentiment_display}</span> | 策略: <span style="color: {strat_color}; font-weight:bold;">{stats['strategy_name']}</span></div></div><div style="text-align: right; line-height: 1;"><div style="font-size: 0.75rem; color: #CCC;">VWAP <span style="color: yellow; font-weight: bold;">{last_vwap:.2f}</span></div><div style="font-size: 0.75rem; color: #888;">{stats['signal']}</div></div></div>"""
             st.markdown(hud_html, unsafe_allow_html=True)
 
             fig = go.Figure()
@@ -178,6 +187,7 @@ def display_dashboard():
             if 'vwap_data' in stats:
                 fig.add_trace(go.Scatter(x=df.index, y=stats['vwap_data'], mode='lines', line=dict(color='yellow', width=2), name="VWAP"))
             
+            # 只有當 stats['entry_time'] 不為 None 時 (即已分析且有訊號)，才畫點
             if stats.get('entry_time'):
                 fig.add_trace(go.Scatter(x=[stats['entry_time']], y=[stats['entry_price']], mode='markers', marker=dict(size=15, color='#FFD700'), name="買進"))
             if stats.get('exit_time'):
@@ -204,11 +214,13 @@ if resolved_code:
     # 獨立按鈕
     c_btn1, c_btn2 = st.columns([1, 1])
     with c_btn1:
-        if st.button(f"🧠 強制更新 {resolved_code} 分析", type="primary", use_container_width=True):
+        # 按鈕邏輯：如果有分數，顯示「重新分析」；如果沒分數，顯示「啟動分析」
+        btn_label = f"🧠 重新分析 {resolved_code}" if current_sentiment else f"🚀 啟動 {resolved_code} AI 分析"
+        if st.button(btn_label, type="primary", use_container_width=True):
             if resolved_code:
                 with st.spinner("🚀 AI 正在深度分析中 (請稍候 10 秒)..."):
                     s = run_sentiment_analysis_debug(resolved_code)
-                    if s > 50:
+                    if s is not None:
                         st.success(f"更新成功！最新分數: {s}")
                         time.sleep(1)
                         st.rerun()
