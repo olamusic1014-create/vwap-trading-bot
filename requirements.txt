@@ -1,2 +1,8 @@
 streamlit
 playwright
+yfinance
+pandas
+twstock
+numpy
+fugle-marketdata
+requests
