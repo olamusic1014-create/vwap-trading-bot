@@ -133,29 +133,49 @@ def calculate_score_keyword_fallback(news_list):
             if w in txt: score -= 5
     return max(0, min(100, score))
 
-# AI 評分 (🔥 官方套件版：最穩定的連線方式)
+# AI 評分 (🔥 終極版：自動尋找可用模型)
 def analyze_with_gemini_requests(api_key, stock_name, news_data):
     txt = "\n".join([f"{i+1}. [{n['source']}] {n['title']}" for i, n in enumerate(news_data)])
     prompt = f"分析「{stock_name}」最新新聞情緒(0-100分)。新聞：\n{txt}\n\n格式：\nSCORE: [分數]\nSUMMARY: [簡短總結]"
     
     try:
-        # 設定 API Key
+        # 設定 Key
         genai.configure(api_key=api_key)
         
-        # 嘗試使用最新的 Flash 模型
+        # 🔥 關鍵步驟：自動詢問 Google 有哪些模型可用
+        target_model_name = None
         try:
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            response = model.generate_content(prompt)
-        except:
-            # 如果失敗，回退到最穩定的 Pro 模型
-            model = genai.GenerativeModel('gemini-pro')
-            response = model.generate_content(prompt)
+            # 遍歷所有可用模型，優先找 Flash 或 Pro
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    if 'flash' in m.name:
+                        target_model_name = m.name
+                        break
+                    elif 'pro' in m.name and not target_model_name:
+                        target_model_name = m.name
+            
+            # 如果都沒找到，隨便拿第一個支援生成的
+            if not target_model_name:
+                for m in genai.list_models():
+                    if 'generateContent' in m.supported_generation_methods:
+                        target_model_name = m.name
+                        break
+        except Exception as e:
+            # 萬一連 listing 都失敗，只能盲猜一個最舊的
+            return None, f"無法列出模型清單: {str(e)}", "error"
+
+        if not target_model_name:
+            return None, "您的 API Key 下沒有任何可用的文字生成模型", "error"
+
+        # 開始生成
+        model = genai.GenerativeModel(target_model_name)
+        response = model.generate_content(prompt)
             
         content = response.text
         match = re.search(r"SCORE:\s*(\d+)", content)
         score = int(match.group(1)) if match else 50
         
-        return score, content, model.model_name
+        return score, content, target_model_name
 
     except Exception as e:
         return None, f"SDK Error: {str(e)}", "error"
