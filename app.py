@@ -12,47 +12,12 @@ st.set_page_config(page_title="智能選股戰情室", layout="wide", page_icon=
 # 2. 注入終極防閃爍 CSS
 st.markdown("""
     <style>
-    /* --------------------------------------------------
-       1. 卷軸隱藏術：防止版面因為卷軸出現而跳動
-    -------------------------------------------------- */
-    /* 針對 Chrome/Safari/Edge 隱藏卷軸 */
-    div[data-testid="stFragment"] ::-webkit-scrollbar {
-        display: none !important;
-        width: 0px !important;
-    }
-    /* 針對 Firefox */
-    div[data-testid="stFragment"] {
-        scrollbar-width: none !important;
-        overflow: hidden !important; /* 強制隱藏溢出內容 */
-    }
-
-    /* --------------------------------------------------
-       2. 防閃爍術：消滅 Streamlit 的 Loading 灰色遮罩
-    -------------------------------------------------- */
-    div[data-testid="stFragment"] {
-        animation: none !important;
-        transition: none !important;
-        opacity: 1 !important; /* 強制不透明 */
-    }
-    div[class*="stShim"] {
-        display: none !important; /* 隱藏載入中的灰色方塊 */
-    }
-
-    /* --------------------------------------------------
-       3. 防白光術：強制圖表底層變黑
-       這是解決「閃一下」最關鍵的一步！
-    -------------------------------------------------- */
-    div[data-testid="stPlotlyChart"] {
-        background-color: #0E1117 !important;
-    }
-    iframe {
-        background-color: #0E1117 !important; /* 讓 iframe 預設背景就是黑的 */
-    }
-    
-    /* 調整頂部間距，讓畫面更緊湊 */
-    .block-container {
-        padding-top: 1rem !important;
-    }
+    div[data-testid="stFragment"] ::-webkit-scrollbar { display: none !important; width: 0px !important; }
+    div[data-testid="stFragment"] { scrollbar-width: none !important; overflow: hidden !important; animation: none !important; transition: none !important; opacity: 1 !important; }
+    div[class*="stShim"] { display: none !important; }
+    div[data-testid="stPlotlyChart"] { background-color: #0E1117 !important; }
+    iframe { background-color: #0E1117 !important; }
+    .block-container { padding-top: 1rem !important; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -61,6 +26,7 @@ if 'target_symbol' not in st.session_state: st.session_state['target_symbol'] = 
 if 'fugle_key' not in st.session_state: st.session_state['fugle_key'] = ""
 if 'input_field' not in st.session_state: st.session_state['input_field'] = "2301"
 if 'pending_restart' not in st.session_state: st.session_state['pending_restart'] = False
+if 'scan_results' not in st.session_state: st.session_state['scan_results'] = []
 
 # 4. 讀取 Secrets
 if "FUGLE_KEY" in st.secrets:
@@ -69,9 +35,9 @@ if "FUGLE_KEY" in st.secrets:
 else:
     is_key_loaded = False
 
-# 5. 定義 Helper Functions
+# 5. Helper Functions
 def reset_monitor():
-    """當參數改變時，強制重啟監控"""
+    """當參數改變時，強制關閉監控並標記重啟"""
     if st.session_state.get('auto_refresh_state'): 
         st.session_state['auto_refresh_state'] = False 
         st.session_state['pending_restart'] = True    
@@ -87,9 +53,19 @@ def get_stock_code(user_input):
     return None, None
 
 def update_symbol(symbol):
+    """點擊放大鏡時觸發"""
     st.session_state['target_symbol'] = symbol
     st.session_state['input_field'] = symbol.split('.')[0]
     reset_monitor()
+
+# 🔥🔥🔥 關鍵修復：把重啟邏輯移到最上方 (在繪製任何 Widget 之前) 🔥🔥🔥
+if st.session_state['pending_restart']:
+    # 這裡顯示一個全螢幕的 Toast 或者只是一個簡單的等待
+    with st.spinner("⏳ 正在切換標的並重啟監控..."):
+        time.sleep(1) # 等待 1 秒緩衝
+        st.session_state['pending_restart'] = False 
+        st.session_state['auto_refresh_state'] = True # 在這裡修改狀態是安全的，因為 Toggle 還沒畫出來
+        st.rerun() # 重新執行，這時候 Toggle 就會變成 True
 
 # 6. 側邊欄 UI
 st.title("🛡️ VWAP 智能戰情室 (Fugle 加速版)")
@@ -103,22 +79,14 @@ else:
 
 st.sidebar.divider()
 
-# 輸入框與選單 (綁定 reset_monitor)
 user_input_val = st.sidebar.text_input("股票代號", key="input_field", on_change=reset_monitor)
 
 timeframe_map = {"1 分鐘": "1T", "5 分鐘": "5T", "15 分鐘": "15T", "30 分鐘": "30T", "60 分鐘": "60T"}
 selected_tf_label = st.sidebar.selectbox("K 線週期", list(timeframe_map.keys()), index=0, on_change=reset_monitor)
 selected_tf_code = timeframe_map[selected_tf_label]
 
+# 這裡才畫出 Toggle，這時候它會讀取上方邏輯設定好的值，不會報錯
 auto_refresh = st.sidebar.toggle("🔄 啟用即時監控 (專注模式)", value=False, key="auto_refresh_state")
-
-# 自動重啟邏輯
-if st.session_state['pending_restart']:
-    st.sidebar.warning("⏳ 參數調整中，即將重啟監控...")
-    time.sleep(1) 
-    st.session_state['pending_restart'] = False 
-    st.session_state['auto_refresh_state'] = True 
-    st.rerun() 
 
 st.sidebar.divider()
 if st.sidebar.button("🔥 全市場智能選股"):
@@ -126,28 +94,21 @@ if st.sidebar.button("🔥 全市場智能選股"):
         top_candidates = screen_hot_stocks(limit=15)
         st.session_state['scan_results'] = top_candidates
 
-# 7. 核心邏輯 (處理輸入與變數定義)
+# 7. 核心邏輯 - 確保變數存在
 if user_input_val:
     code, name = get_stock_code(user_input_val)
     if code and code != st.session_state['target_symbol']:
         st.session_state['target_symbol'] = code
 
-# 🔥🔥🔥 關鍵修正：在這裡定義 resolved_code，確保全域可見 🔥🔥🔥
+# 確保 resolved_code 全域定義
 resolved_code, resolved_name = get_stock_code(st.session_state['target_symbol'])
 
-if not resolved_code:
-    st.error(f"無效代號: {st.session_state['target_symbol']}")
-
-# 8. Fragment 儀表板定義
-# 只有當 resolved_code 存在時，這個函數才會有意義
+# 8. Fragment 儀表板
 @st.fragment(run_every=5 if auto_refresh else None)
 def display_dashboard():
-    # 再次檢查，雖然外面檢查過了，但為了 fragment 的獨立性，保險起見
     if not resolved_code: return
 
-    # 🔥 容器高度設為 680px (比之前更大)，確保絕對不會出現卷軸
     with st.container(height=680, border=False):
-        
         df, stats = get_orb_signals(resolved_code, st.session_state['fugle_key'], timeframe=selected_tf_code)
         
         if df is not None:
@@ -177,8 +138,6 @@ def display_dashboard():
             if stats.get('exit_time'):
                  fig.add_trace(go.Scatter(x=[stats['exit_time']], y=[stats['exit_price']], mode='markers', marker=dict(size=15, color='red', symbol='x', line=dict(width=2, color='white')), name="出場"))
 
-            # 🔥 圖表高度設為 400px，保留下方約 150px 的緩衝區給卷軸 (如果有)
-            # 這樣就算卷軸出現，也只會在下方空白處，不會擠壓到圖表
             fig.update_layout(
                 height=400,
                 template="plotly_dark", 
@@ -186,27 +145,22 @@ def display_dashboard():
                 xaxis=dict(showgrid=True, gridcolor='#333', type='category'),
                 yaxis=dict(showgrid=True, gridcolor='#333'),
                 margin=dict(l=0, r=0, t=10, b=0),
-                uirevision='constant', # 鎖定視角
-                transition={'duration': 0} # 關閉動畫
+                uirevision='constant', 
+                transition={'duration': 0} 
             )
             
-            # 關閉 ModeBar 減少視覺干擾
-            st.plotly_chart(
-                fig, 
-                use_container_width=True, 
-                key="live_chart_fragment",
-                config={'displayModeBar': False} 
-            )
-            
+            st.plotly_chart(fig, use_container_width=True, key="live_chart_fragment", config={'displayModeBar': False})
         else:
             st.error(f"無法取得數據 (Source: {stats.get('source')})")
 
-# 9. 執行儀表板 (只有在代號有效時才執行)
+# 9. 執行儀表板
 if resolved_code:
     display_dashboard()
+else:
+    st.error(f"無效代號: {st.session_state['target_symbol']}")
 
 # 10. 選股結果顯示區
-if 'scan_results' in st.session_state and st.session_state['scan_results']:
+if st.session_state['scan_results']:
     st.divider()
     st.subheader("🔥 智能選股結果")
     for item in st.session_state['scan_results']:
@@ -214,4 +168,5 @@ if 'scan_results' in st.session_state and st.session_state['scan_results']:
         c1.write(item['symbol'])
         c2.write(f"波動率: {item['volatility']:.2f}%")
         target = item['symbol'].split('.')[0]
+        # 這裡的按鈕會觸發 update_symbol -> reset_monitor
         c3.button("🔍", key=f"btn_{item['symbol']}", on_click=update_symbol, args=(f"{target}.TW",))
