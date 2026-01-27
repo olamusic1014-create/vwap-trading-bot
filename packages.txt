@@ -6,3 +6,5 @@ libnss3
 libx11-xcb1
 libxss1
 libxtst6
+build-essential
+python3-dev
