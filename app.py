@@ -7,9 +7,9 @@ import twstock
 import time
 
 # 1. 頁面設定
-st.set_page_config(page_title="智能選股戰情室", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="戰情室", layout="wide", page_icon="🛡️")
 
-# 2. 注入 CSS：防閃爍 + 手機版優化
+# 2. 注入 CSS：防閃爍 + 手機版極致壓縮
 st.markdown("""
     <style>
     /* 隱藏卷軸 */
@@ -24,11 +24,20 @@ st.markdown("""
     div[data-testid="stPlotlyChart"] { background-color: #0E1117 !important; }
     iframe { background-color: #0E1117 !important; }
     
-    /* 手機版優化：減少頂部留白，讓控制列更靠上 */
-    .block-container { padding-top: 1rem !important; padding-bottom: 5rem !important; }
+    /* 🔥 極致壓縮：移除頂部留白，讓內容直接貼頂 */
+    .block-container { 
+        padding-top: 0.5rem !important; 
+        padding-bottom: 2rem !important; 
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
+    }
     
-    /* 讓輸入框在手機上更好點 */
-    div[data-testid="stTextInput"] input { font-size: 16px !important; }
+    /* 讓輸入框更緊湊 */
+    div[data-testid="stTextInput"] { margin-bottom: 0px !important; }
+    div[data-testid="stSelectbox"] { margin-bottom: 0px !important; }
+    
+    /* 調整 Toggle 的邊距 */
+    div[data-testid="stCheckbox"] { margin-top: 5px !important; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -68,45 +77,28 @@ def update_symbol(symbol):
     st.session_state['input_field'] = symbol.split('.')[0]
     reset_monitor()
 
-# 🔥 自動重啟邏輯 (放在最上面)
+# 自動重啟邏輯
 if st.session_state['pending_restart']:
-    with st.spinner("⏳ 正在切換並重啟監控..."):
+    with st.spinner("⏳ 重啟中..."):
         time.sleep(0.5) 
         st.session_state['pending_restart'] = False 
         st.session_state['auto_refresh_state'] = True 
         st.rerun()
 
-# 6. 主畫面 UI (手機版佈局)
-st.title("🛡️ VWAP 戰情室")
-
-# --- 頂部折疊區 (放 API Key 和 選股功能) ---
-with st.expander("⚙️ 設定 / 全市場選股 (點擊展開)"):
-    if is_key_loaded:
-        st.success("✅ API Key 已載入")
-    else:
-        api_key = st.text_input("🔑 富果 API Key", value=st.session_state['fugle_key'], type="password")
-        if api_key: st.session_state['fugle_key'] = api_key
-    
-    if st.button("🔥 掃描全市場熱門股"):
-        with st.spinner("掃描中..."):
-            st.session_state['scan_results'] = screen_hot_stocks(limit=15)
-
-# --- 核心控制區 (直接顯示在畫面頂部) ---
-# 使用 columns 讓輸入框並排，節省手機空間
-c1, c2 = st.columns([1.5, 1])
+# --- 頂部控制列 (緊湊佈局) ---
+# c1: 代號, c2: 週期, c3: 開關
+c1, c2, c3 = st.columns([1.2, 0.8, 1])
 
 with c1:
-    # 股票輸入框
-    user_input_val = st.text_input("股票代號", key="input_field", on_change=reset_monitor)
+    user_input_val = st.text_input("代號", key="input_field", on_change=reset_monitor, label_visibility="collapsed", placeholder="股票代號")
 
 with c2:
-    # 週期選擇
     timeframe_map = {"1分": "1T", "5分": "5T", "15分": "15T", "30分": "30T", "60分": "60T"}
-    selected_tf_label = st.selectbox("週期", list(timeframe_map.keys()), index=0, on_change=reset_monitor)
+    selected_tf_label = st.selectbox("週期", list(timeframe_map.keys()), index=0, on_change=reset_monitor, label_visibility="collapsed")
     selected_tf_code = timeframe_map[selected_tf_label]
 
-# 即時監控開關 (獨立一行，大按鈕)
-auto_refresh = st.toggle("🔄 啟用即時監控", value=False, key="auto_refresh_state")
+with c3:
+    auto_refresh = st.toggle("監控", value=False, key="auto_refresh_state")
 
 # 7. 核心邏輯
 if user_input_val:
@@ -125,29 +117,38 @@ def display_dashboard():
         df, stats = get_orb_signals(resolved_code, st.session_state['fugle_key'], timeframe=selected_tf_code)
         
         if df is not None:
-            # 簡化標題顯示，節省空間
-            st.markdown(f"### {resolved_name} `{resolved_code}`")
-            
-            # 數據狀態列
-            src = stats.get('source', 'Unknown')
-            src_color = "#00FF00" if "Fugle" in src else "orange"
-            
-            # 使用 HTML 做更緊湊的排版
-            st.markdown(
-                f"""
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                    <div><span style='color:gray; font-size:0.8rem'>來源:</span> <span style='color:{src_color}; font-weight:bold; font-size:0.8rem'>{src}</span></div>
-                    <div><span style='color:gray; font-size:0.8rem'>狀態:</span> <span style='font-weight:bold'>{stats['signal']}</span></div>
-                </div>
-                """, 
-                unsafe_allow_html=True
-            )
-            
-            # 價格大字顯示
-            c_price, c_vwap = st.columns(2)
-            c_price.metric("現價", f"{stats['signal_price']:.2f}")
+            # 計算顏色
+            current_price = stats['signal_price']
             last_vwap = df['VWAP'].iloc[-1] if not df.empty and 'VWAP' in df.columns else 0
-            c_vwap.metric("VWAP", f"{last_vwap:.2f}")
+            
+            # 價格顏色：大於 VWAP 亮綠，小於 VWAP 亮紅 (美股習慣) -> 或是台股習慣 (紅漲綠跌)
+            # 這裡我們用台股習慣：如果 > 昨收 是紅的，但這裡沒有昨收，我們先用 > VWAP 來標示強弱
+            price_color = "#FF5252" if current_price > last_vwap else "#00E676" # 假設紅是強
+            
+            # 🔥 單行儀表板 (HUD) 🔥
+            # 使用 Flexbox 讓所有資訊擠在同一行
+            st.markdown(f"""
+            <div style="
+                display: flex; 
+                justify-content: space-between; 
+                align-items: center; 
+                background-color: #262730; 
+                padding: 10px 15px; 
+                border-radius: 8px; 
+                margin-bottom: 10px;
+                border: 1px solid #444;
+            ">
+                <div style="display: flex; align-items: baseline; gap: 8px;">
+                    <span style="font-size: 1.1rem; font-weight: bold; color: #FFF;">{resolved_code}</span>
+                    <span style="font-size: 1.6rem; font-weight: bold; color: {price_color};">{current_price:.2f}</span>
+                </div>
+                
+                <div style="text-align: right;">
+                    <div style="font-size: 0.9rem; color: #CCC;">VWAP <span style="color: yellow; font-weight: bold;">{last_vwap:.2f}</span></div>
+                    <div style="font-size: 0.8rem; color: #888;">{stats['signal']}</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
 
             # 繪圖
             fig = go.Figure()
@@ -161,18 +162,15 @@ def display_dashboard():
             if stats.get('exit_time'):
                  fig.add_trace(go.Scatter(x=[stats['exit_time']], y=[stats['exit_price']], mode='markers', marker=dict(size=15, color='red', symbol='x', line=dict(width=2, color='white')), name="出場"))
 
-            # 🔥🔥🔥 縮放視角鎖定核心 🔥🔥🔥
-            # uirevision=resolved_code 的意思是：
-            # 「只要 resolved_code (股票代號) 沒變，使用者的縮放/平移狀態就不要重置！」
-            # 只有當你切換股票時，圖表才會重置回預設視角。
+            # 🔥 圖表設定：縮放視角鎖定
             fig.update_layout(
-                height=380,
+                height=420, # 稍微加大一點點，因為上面省了很多空間
                 template="plotly_dark", 
                 plot_bgcolor='#0E1117', paper_bgcolor='#0E1117', font=dict(color='white'),
                 xaxis=dict(showgrid=True, gridcolor='#333', type='category'),
                 yaxis=dict(showgrid=True, gridcolor='#333'),
-                margin=dict(l=0, r=0, t=10, b=0),
-                uirevision=resolved_code, # 👈 這行是縮放不跳掉的關鍵
+                margin=dict(l=0, r=0, t=5, b=0),
+                uirevision=resolved_code, # 👈 鎖定縮放
                 transition={'duration': 0} 
             )
             
@@ -186,10 +184,23 @@ if resolved_code:
 else:
     st.warning("請輸入股票代號")
 
-# 10. 選股結果 (放在最下方)
+# --- 底部折疊區 (設定與選股) ---
+# 移到最下面，不佔用看盤視線
+with st.expander("🛠️ 進階設定 / 全市場選股"):
+    if is_key_loaded:
+        st.success("✅ API Key 已載入")
+    else:
+        api_key = st.text_input("🔑 富果 API Key", value=st.session_state['fugle_key'], type="password")
+        if api_key: st.session_state['fugle_key'] = api_key
+    
+    if st.button("🔥 掃描全市場熱門股"):
+        with st.spinner("掃描中..."):
+            st.session_state['scan_results'] = screen_hot_stocks(limit=15)
+
+# 選股結果列表
 if st.session_state['scan_results']:
     st.divider()
-    st.markdown("##### 🔥 掃描結果") # 標題改小一點
+    st.markdown("##### 掃描結果")
     for item in st.session_state['scan_results']:
         c1, c2, c3 = st.columns([2, 2, 1])
         c1.write(f"**{item['symbol']}**")
