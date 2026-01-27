@@ -7,7 +7,7 @@ import twstock
 import time
 import asyncio
 
-# 嘗試匯入模組
+# 嘗試匯入使用者的爬蟲分析模組
 try:
     import stock_heat_analyzer as heat
     HAS_HEAT_MODULE = True
@@ -40,18 +40,17 @@ st.markdown("""
 
 # 3. Session State
 if 'target_symbol' not in st.session_state: st.session_state['target_symbol'] = "2301.TW"
-if 'fugle_key' not in st.session_state: st.session_state['fugle_key'] = ""
 if 'input_field' not in st.session_state: st.session_state['input_field'] = "2301"
 if 'pending_restart' not in st.session_state: st.session_state['pending_restart'] = False
 if 'scan_results' not in st.session_state: st.session_state['scan_results'] = []
 if 'sentiment_cache' not in st.session_state: st.session_state['sentiment_cache'] = {}
 
-# 4. Secrets
-if "FUGLE_KEY" in st.secrets:
-    st.session_state['fugle_key'] = st.secrets["FUGLE_KEY"]
-    is_key_loaded = True
-else:
-    is_key_loaded = False
+# 4. Secrets 自動讀取 (不顯示在 UI)
+FUGLE_KEY = st.secrets.get("FUGLE_KEY", None)
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", None)
+
+is_key_loaded = (FUGLE_KEY is not None)
+is_ai_ready = (GEMINI_API_KEY is not None)
 
 # 5. Helper Functions
 def reset_monitor():
@@ -74,16 +73,42 @@ def update_symbol(symbol):
     st.session_state['input_field'] = symbol.split('.')[0]
     reset_monitor()
 
-# 新聞分析
+# 🔥 核心修正：正確呼叫 AI 進行分析 (只用 Secrets Key)
 def run_sentiment_analysis(stock_code):
     if not HAS_HEAT_MODULE: return 50
+    
+    # 檢查快取
     if stock_code in st.session_state['sentiment_cache']:
         return st.session_state['sentiment_cache'][stock_code]
+    
     try:
-        # 這裡簡化呼叫，實際應用可連接你的爬蟲邏輯
-        # 這裡暫時回傳一個模擬分數，避免卡住
-        return 85 # 模擬高分
-    except Exception:
+        # 1. 爬取新聞
+        results = asyncio.run(heat.run_analysis(stock_code.split('.')[0]))
+        
+        # 2. 整理新聞格式
+        all_news = []
+        for res in results:
+            if isinstance(res, list): all_news.extend(res)
+            
+        score = 50
+        
+        # 3. 呼叫 AI (使用 Secrets 裡的 Key)
+        if is_ai_ready and all_news:
+            # 🔥 這裡使用 Secrets Key 呼叫，才能拿到 80+ 的分數
+            ai_score, ai_report, model = heat.analyze_with_gemini_requests(GEMINI_API_KEY, stock_code, all_news)
+            if ai_score is not None:
+                score = ai_score
+            else:
+                score = heat.calculate_score_keyword_fallback(all_news)
+        else:
+            # 如果沒有 Key，只能用關鍵字 (通常 50-60 分)
+            score = heat.calculate_score_keyword_fallback(all_news)
+            
+        st.session_state['sentiment_cache'][stock_code] = score
+        return score
+
+    except Exception as e:
+        print(f"Sentiment Error: {e}")
         return 50
 
 # 重啟邏輯
@@ -112,6 +137,7 @@ if user_input_val:
 
 resolved_code, resolved_name = get_stock_code(st.session_state['target_symbol'])
 
+# 獲取情緒分數
 current_sentiment = st.session_state['sentiment_cache'].get(resolved_code, 50)
 
 # 8. Fragment 儀表板
@@ -122,7 +148,7 @@ def display_dashboard():
     with st.container(height=650, border=False):
         df, stats = get_orb_signals(
             resolved_code, 
-            st.session_state['fugle_key'], 
+            FUGLE_KEY, # 直接傳入 Secrets Key
             timeframe=selected_tf_code,
             sentiment_score=current_sentiment
         )
@@ -133,9 +159,11 @@ def display_dashboard():
             price_color = "#FF5252" if current_price > last_vwap else "#00E676"
             pct_change = stats.get('pct_change', 0) * 100
             
+            # 顏色邏輯
             strat_color = "#FFD700" if "接刀" in stats['strategy_name'] else "#00BFFF"
+            sentiment_color = "#FF4444" if current_sentiment > 80 else ("#00BFFF" if current_sentiment < 40 else "#888")
             
-            hud_html = f"""<div style="display: flex; justify-content: space-between; align-items: center; background-color: #262730; padding: 5px 10px; border-radius: 6px; border: 1px solid #444; margin-bottom: 5px; margin-top: 5px;"><div style="display: flex; flex-direction: column;"><div style="display: flex; align-items: baseline; gap: 8px;"><span style="font-size: 1rem; font-weight: bold; color: #FFF;">{resolved_code}</span><span style="font-size: 1.4rem; font-weight: bold; color: {price_color};">{current_price:.2f}</span><span style="font-size: 0.8rem; color: {price_color};">({pct_change:+.2f}%)</span></div><div style="font-size: 0.75rem; color: #AAA;">情緒: <span style="color: {'#FF4444' if current_sentiment>80 else '#888'};">{current_sentiment}</span> | 策略: <span style="color: {strat_color}; font-weight:bold;">{stats['strategy_name']}</span></div></div><div style="text-align: right; line-height: 1;"><div style="font-size: 0.75rem; color: #CCC;">VWAP <span style="color: yellow; font-weight: bold;">{last_vwap:.2f}</span></div><div style="font-size: 0.75rem; color: #888;">{stats['signal']}</div></div></div>"""
+            hud_html = f"""<div style="display: flex; justify-content: space-between; align-items: center; background-color: #262730; padding: 5px 10px; border-radius: 6px; border: 1px solid #444; margin-bottom: 5px; margin-top: 5px;"><div style="display: flex; flex-direction: column;"><div style="display: flex; align-items: baseline; gap: 8px;"><span style="font-size: 1rem; font-weight: bold; color: #FFF;">{resolved_code}</span><span style="font-size: 1.4rem; font-weight: bold; color: {price_color};">{current_price:.2f}</span><span style="font-size: 0.8rem; color: {price_color};">({pct_change:+.2f}%)</span></div><div style="font-size: 0.75rem; color: #AAA;">情緒: <span style="color: {sentiment_color}; font-weight:bold;">{current_sentiment}</span> | 策略: <span style="color: {strat_color}; font-weight:bold;">{stats['strategy_name']}</span></div></div><div style="text-align: right; line-height: 1;"><div style="font-size: 0.75rem; color: #CCC;">VWAP <span style="color: yellow; font-weight: bold;">{last_vwap:.2f}</span></div><div style="font-size: 0.75rem; color: #888;">{stats['signal']}</div></div></div>"""
             st.markdown(hud_html, unsafe_allow_html=True)
 
             fig = go.Figure()
@@ -169,20 +197,33 @@ if resolved_code:
 else:
     st.warning("請輸入股票代號")
 
-# --- 底部 ---
+# --- 底部設定區 (完全不顯示 Key 輸入框) ---
 with st.expander("🛠️ 設定 / 智慧選股 / 情緒分析"):
-    if is_key_loaded: st.success("✅ API Key 已載入")
-    else:
-        api_key = st.text_input("🔑 富果 API Key", value=st.session_state['fugle_key'], type="password")
-        if api_key: st.session_state['fugle_key'] = api_key
     
+    # 狀態檢查
+    if is_key_loaded: 
+        st.success("✅ 富果 API Key 已載入 (Secrets)")
+    else: 
+        st.warning("⚠️ 富果 API Key 未設定，使用 Yahoo 延遲報價")
+        
+    if is_ai_ready:
+        st.success("🧠 Gemini API Key 已載入 (Secrets)")
+    else:
+        st.error("❌ Gemini API Key 未設定，AI 分析無法啟動！請至 Secrets 設定。")
+
+    # 手動觸發分析按鈕
     if st.button(f"🧠 分析 {resolved_code} 市場情緒"):
-        with st.spinner("正在計算..."):
-            s = run_sentiment_analysis(resolved_code)
-            st.session_state['sentiment_cache'][resolved_code] = s
-            st.success(f"分數: {s}")
-            time.sleep(1)
-            st.rerun()
+        if HAS_HEAT_MODULE and resolved_code:
+            if is_ai_ready:
+                with st.spinner("AI 正在閱讀新聞 (這需要幾秒鐘)..."):
+                    s = run_sentiment_analysis(resolved_code)
+                    st.success(f"AI 分析完成！分數: {s}")
+                    time.sleep(1)
+                    st.rerun()
+            else:
+                st.error("請先在 Secrets 設定 GEMINI_API_KEY")
+        else:
+            st.error("找不到分析模組或代號")
 
     if st.button("🔥 掃描全市場熱門股"):
         with st.spinner("掃描中..."):

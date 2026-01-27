@@ -96,7 +96,7 @@ def resample_data(df, timeframe_str):
     return df_resampled
 
 # --- 🔥 主邏輯：策略訊號產生器 (含接刀策略) ---
-# 這裡必須要有 sentiment_score 參數，否則 app.py 會報錯！
+# 參數 sentiment_score 用來決定策略
 @st.cache_data(ttl=5)
 def get_orb_signals(symbol_input, fugle_api_key=None, timeframe='1T', sentiment_score=50):
     symbol_id = symbol_input.split('.')[0]
@@ -135,7 +135,7 @@ def get_orb_signals(symbol_input, fugle_api_key=None, timeframe='1T', sentiment_
     if timeframe != '1T':
         df = resample_data(df, timeframe)
 
-    # --- 取得昨日收盤價 (計算漲跌幅用) ---
+    # --- 取得昨日收盤價 ---
     prev_close = 0
     trend = "Unknown"
     try:
@@ -167,7 +167,8 @@ def get_orb_signals(symbol_input, fugle_api_key=None, timeframe='1T', sentiment_
     # 🔥 策略 A: 左側接刀 (熱度 > 80)
     if sentiment_score > 80:
         strategy_name = "🔥 左側接刀"
-        if pct_change <= -0.03: # 跌超過 3%
+        # 條件：跌超過 3% 且有 AI 高分背書
+        if pct_change <= -0.03:
             for t, row in df.iterrows():
                 row_change = (row['Close'] - prev_close) / prev_close
                 if row_change <= -0.03:
