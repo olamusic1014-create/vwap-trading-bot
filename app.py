@@ -55,7 +55,7 @@ def reset_monitor():
         st.session_state['auto_refresh_state'] = False 
         st.session_state['pending_restart'] = True    
 
-# 🚀 升級版：會自動查詢中文名稱
+# 🚀 自動查詢中文名稱
 def get_stock_code(user_input):
     s = str(user_input).strip().upper()
     raw_code = s.replace('.TW', '')
@@ -64,7 +64,7 @@ def get_stock_code(user_input):
     if raw_code.isdigit():
         if raw_code in twstock.codes:
             return f"{raw_code}.TW", twstock.codes[raw_code].name
-        return f"{raw_code}.TW", raw_code # 找不到名稱就回傳代號
+        return f"{raw_code}.TW", raw_code 
     
     # 情況 2: 輸入的是中文名稱 (如 台積電)
     for code, info in twstock.codes.items():
@@ -145,7 +145,7 @@ if user_input_val:
 resolved_code, resolved_name = get_stock_code(st.session_state['target_symbol'])
 current_sentiment = st.session_state['sentiment_cache'].get(resolved_code, None)
 
-# 8. Fragment 儀表板
+# 8. Fragment 儀表板 (手機滑動優化版)
 @st.fragment(run_every=5 if auto_refresh else None)
 def display_dashboard():
     if not resolved_code: return
@@ -179,7 +179,7 @@ def display_dashboard():
             price_color = "#FF5252" if current_price > last_vwap else "#00E676"
             pct_change = stats.get('pct_change', 0) * 100
             
-            # 🚀 修改點：HUD 顯示中文名稱
+            # HUD (含中文名稱)
             hud_html = f"""
             <div style="display: flex; justify-content: space-between; align-items: center; background-color: #262730; padding: 10px 15px; border-radius: 8px; border: 1px solid #444; margin-bottom: 10px;">
                 <div style="display: flex; flex-direction: column;">
@@ -201,6 +201,12 @@ def display_dashboard():
             </div>
             """
             st.markdown(hud_html, unsafe_allow_html=True)
+
+            # --- 🔥 手機優化：圖表觸控鎖定開關 ---
+            # 預設關閉 (False)，讓圖表變成靜態圖片，方便手機滑動
+            c_tog, c_blank = st.columns([0.6, 0.4])
+            with c_tog:
+                enable_touch = st.toggle("🖐️ 解鎖圖表 (縮放/移動)", value=False)
 
             fig = go.Figure()
             fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="價格"))
@@ -224,7 +230,15 @@ def display_dashboard():
                 transition={'duration': 0},
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10), bgcolor="rgba(0,0,0,0)")
             )
-            st.plotly_chart(fig, use_container_width=True, key="live_chart_fragment", config={'displayModeBar': False})
+            
+            # 🔥 關鍵設定：根據開關決定是否鎖定圖表
+            chart_config = {
+                'displayModeBar': False, 
+                'staticPlot': not enable_touch,  # 沒開鎖前，圖表是靜態的(可滑動網頁)
+                'scrollZoom': enable_touch
+            }
+            
+            st.plotly_chart(fig, use_container_width=True, key="live_chart_fragment", config=chart_config)
         else:
             st.error("無法取得數據，請檢查代號或網路連線")
 
@@ -233,7 +247,6 @@ if resolved_code:
     
     c_btn1, c_btn2 = st.columns([1, 1])
     with c_btn1:
-        # 按鈕顯示中文名稱，更加直觀
         if current_sentiment is None:
             btn_text = f"🚀 啟動 {resolved_name} ({resolved_code}) AI 分析"
             btn_type = "primary"
