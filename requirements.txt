@@ -1,10 +1,2 @@
-streamlit>=1.37.1
-pandas
-yfinance>=0.2.50
-plotly
-twstock
-numpy
-lxml
-requests
-curl-cffi
-fugle-marketdata
+streamlit
+playwright
