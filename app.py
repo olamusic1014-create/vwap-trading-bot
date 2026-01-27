@@ -1,10 +1,10 @@
 import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
-import time
 import analyzer
 from analyzer import get_orb_signals, screen_hot_stocks
 import twstock
+import time
 
 st.set_page_config(page_title="智能選股戰情室", layout="wide", page_icon="🛡️")
 
@@ -112,34 +112,33 @@ resolved_code, resolved_name = get_stock_code(st.session_state['target_symbol'])
 if not resolved_code:
     st.error(f"無效代號: {st.session_state['target_symbol']}")
 
-else:
-    # 建立空畫框
-    header_spot = st.empty()
-    metrics_spot = st.empty()
-    chart_spot = st.empty()
-    warning_spot = st.empty()
+# 🔥 防閃爍核心：使用 fragment + 固定高度容器
+@st.fragment(run_every=5 if auto_refresh else None)
+def display_dashboard():
+    if not resolved_code: return
 
-    def render_dashboard():
+    # 1. 使用固定高度的 container 框住整個區域
+    # 這能防止數據加載時畫面高度塌陷造成的「視覺閃爍」
+    with st.container(height=600, border=False):
+        
+        # 獲取數據
         df, stats = get_orb_signals(resolved_code, st.session_state['fugle_key'], timeframe=selected_tf_code)
         
         if df is not None:
-            header_spot.subheader(f"📊 {resolved_name} ({resolved_code}) - {selected_tf_label}")
-            
             if stats.get('fugle_error'):
-                warning_spot.warning(f"⚠️ 富果連線失敗，已切換回 Yahoo。原因：{stats['fugle_error']}")
-            else:
-                warning_spot.empty()
+                st.warning(f"⚠️ 富果連線失敗，已切換回 Yahoo。原因：{stats['fugle_error']}")
 
+            st.subheader(f"📊 {resolved_name} ({resolved_code}) - {selected_tf_label}")
+            
             src = stats.get('source', 'Unknown')
             src_color = "#00FF00" if "Fugle" in src else "orange"
+            st.markdown(f"**資料來源:** <span style='color:{src_color}; font-weight:bold'>{src}</span>", unsafe_allow_html=True)
             
-            with metrics_spot.container():
-                st.markdown(f"**資料來源:** <span style='color:{src_color}; font-weight:bold'>{src}</span>", unsafe_allow_html=True)
-                c1, c2, c3 = st.columns(3)
-                c1.metric("目前股價", f"{stats['signal_price']:.2f}")
-                last_vwap = df['VWAP'].iloc[-1] if not df.empty and 'VWAP' in df.columns else 0
-                c2.metric("VWAP", f"{last_vwap:.2f}")
-                c3.metric("訊號狀態", stats['signal'])
+            col1, col2, col3 = st.columns(3)
+            col1.metric("目前股價", f"{stats['signal_price']:.2f}")
+            last_vwap = df['VWAP'].iloc[-1] if not df.empty and 'VWAP' in df.columns else 0
+            col2.metric("VWAP", f"{last_vwap:.2f}")
+            col3.metric("訊號狀態", stats['signal'])
 
             fig = go.Figure()
             fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="價格"))
@@ -153,28 +152,24 @@ else:
                  fig.add_trace(go.Scatter(x=[stats['exit_time']], y=[stats['exit_price']], mode='markers', marker=dict(size=15, color='red', symbol='x', line=dict(width=2, color='white')), name="出場"))
 
             fig.update_layout(
-                height=450, template="plotly_dark", 
+                height=400, # 固定圖表高度
+                template="plotly_dark", 
                 plot_bgcolor='#0E1117', paper_bgcolor='#0E1117', font=dict(color='white'),
                 xaxis=dict(showgrid=True, gridcolor='#333', type='category'),
                 yaxis=dict(showgrid=True, gridcolor='#333'),
-                margin=dict(l=0, r=0, t=30, b=0),
-                uirevision='constant' # 🔥 關鍵：雖然拿掉了 key，但這行會確保視角不重置
+                margin=dict(l=0, r=0, t=10, b=0),
+                uirevision='constant' # 鎖定視角，防止重繪時跳動
             )
             
-            # 🔥 修正：移除了 key="live_chart"，避免重複 ID 報錯
-            chart_spot.plotly_chart(fig, use_container_width=True)
+            # 🔥 關鍵：在 fragment 內使用固定 key 是合法的，因為 fragment 每次執行都是「更新」而非「重建」
+            st.plotly_chart(fig, use_container_width=True, key="live_chart_fragment")
+            
         else:
-            warning_spot.error(f"無法取得數據 (Source: {stats.get('source')})")
+            st.error(f"無法取得數據 (Source: {stats.get('source')})")
 
-    # 執行模式
-    if auto_refresh:
-        # 不閃爍迴圈
-        while True:
-            render_dashboard()
-            time.sleep(5)
-    else:
-        # 靜態模式
-        render_dashboard()
+# 執行 fragment
+if resolved_code:
+    display_dashboard()
 
 # --- 顯示選股結果 ---
 if 'scan_results' in st.session_state and st.session_state['scan_results']:
