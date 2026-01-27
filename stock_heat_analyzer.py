@@ -131,29 +131,31 @@ def calculate_score_keyword_fallback(news_list):
             if w in txt: score -= 5
     return max(0, min(100, score))
 
-# AI 評分 (純函數，無 UI)
+# AI 評分 (🔥 強力診斷版：會回傳真實錯誤訊息)
 def analyze_with_gemini_requests(api_key, stock_name, news_data):
     txt = "\n".join([f"{i+1}. [{n['source']}] {n['title']}" for i, n in enumerate(news_data)])
     prompt = f"分析「{stock_name}」最新新聞情緒(0-100分)。新聞：\n{txt}\n\n格式：\nSCORE: [分數]\nSUMMARY: [簡短總結]"
     
-    # 嘗試 Flash 模型
+    # 優先使用 Flash 模型 (速度快、容錯高)
     model = "models/gemini-1.5-flash"
+    url = f"https://generativelanguage.googleapis.com/v1beta/{model}:generateContent?key={api_key}"
+    
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/{model}:generateContent?key={api_key}"
         res = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=30)
-        if res.status_code == 200:
-            content = res.json()['candidates'][0]['content']['parts'][0]['text']
-            match = re.search(r"SCORE:\s*(\d+)", content)
-            return int(match.group(1)) if match else 50, content, model
         
-        # 失敗則嘗試 Pro
-        model = "models/gemini-pro"
-        url = f"https://generativelanguage.googleapis.com/v1beta/{model}:generateContent?key={api_key}"
-        res = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=30)
+        # 成功
         if res.status_code == 200:
-            content = res.json()['candidates'][0]['content']['parts'][0]['text']
-            match = re.search(r"SCORE:\s*(\d+)", content)
-            return int(match.group(1)) if match else 50, content, model
+            try:
+                content = res.json()['candidates'][0]['content']['parts'][0]['text']
+                match = re.search(r"SCORE:\s*(\d+)", content)
+                return int(match.group(1)) if match else 50, content, model
+            except:
+                return None, "JSON 解析失敗", "error"
+        else:
+            # 🔥 失敗時，抓取 Google 回傳的詳細錯誤
+            error_msg = f"Google 拒絕連線 (代碼 {res.status_code}): {res.text[:200]}"
+            print(error_msg)
+            return None, error_msg, "error"
             
-    except Exception as e: return None, str(e), "error"
-    return None, "API Error", "error"
+    except Exception as e:
+        return None, f"連線異常: {str(e)}", "error"
