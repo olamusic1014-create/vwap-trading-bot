@@ -23,7 +23,7 @@ try:
 except Exception:
     pass
 
-# Windows 修復
+# Windows 系統修復
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
@@ -131,41 +131,45 @@ def calculate_score_keyword_fallback(news_list):
             if w in txt: score -= 5
     return max(0, min(100, score))
 
-# AI 評分 (🔥 全自動切換模型版)
+# AI 評分 (🔥 暴力輪詢版：死纏爛打直到成功)
 def analyze_with_gemini_requests(api_key, stock_name, news_data):
     txt = "\n".join([f"{i+1}. [{n['source']}] {n['title']}" for i, n in enumerate(news_data)])
     prompt = f"分析「{stock_name}」最新新聞情緒(0-100分)。新聞：\n{txt}\n\n格式：\nSCORE: [分數]\nSUMMARY: [簡短總結]"
     
-    # 定義模型清單：優先嘗試 Flash，失敗就換 Pro
+    # 這裡列出 Google 所有的模型，一個不行就換下一個
+    # Flash 最快，Pro 最穩，1.0 是舊版兼容
     candidate_models = [
-        "models/gemini-1.5-flash",
-        "models/gemini-1.5-pro",
-        "models/gemini-pro"
+        "models/gemini-1.5-flash", 
+        "models/gemini-1.5-pro", 
+        "models/gemini-pro",
+        "models/gemini-1.0-pro"
     ]
 
-    last_error = ""
+    last_error_msg = ""
 
     for model in candidate_models:
         url = f"https://generativelanguage.googleapis.com/v1beta/{model}:generateContent?key={api_key}"
         try:
+            # 嘗試呼叫
             res = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=30)
             
             if res.status_code == 200:
-                # 成功！
+                # 成功！直接回傳
                 content = res.json()['candidates'][0]['content']['parts'][0]['text']
                 match = re.search(r"SCORE:\s*(\d+)", content)
                 score = int(match.group(1)) if match else 50
-                return score, content, model # 回傳成功結果
+                return score, content, model
             
             elif res.status_code == 404:
-                # 找不到這個模型，嘗試下一個
+                # 404 代表此模型不可用，嘗試下一個
                 continue
             else:
-                last_error = f"Error {res.status_code}: {res.text[:100]}"
+                # 其他錯誤 (如 Key 錯誤)，記錄下來
+                last_error_msg = f"Error {res.status_code}: {res.text[:100]}"
                 
         except Exception as e:
-            last_error = str(e)
+            last_error_msg = str(e)
             continue
             
-    # 如果試了所有模型都失敗
-    return None, f"所有模型皆失敗。最後錯誤: {last_error}", "error"
+    # 如果全部模型都失敗，回傳最後一次的錯誤訊息給 App 顯示
+    return None, f"全部模型嘗試失敗。最後錯誤: {last_error_msg}", "error"
