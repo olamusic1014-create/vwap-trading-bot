@@ -8,3 +8,4 @@ twstock
 plotly
 requests
 greenlet
+lxml
