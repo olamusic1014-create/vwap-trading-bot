@@ -8,4 +8,4 @@ twstock
 plotly
 requests
 greenlet
-lxml
+google-generativeai
