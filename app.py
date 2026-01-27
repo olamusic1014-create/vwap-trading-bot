@@ -6,37 +6,33 @@ from analyzer import get_orb_signals, screen_hot_stocks
 import twstock
 import time
 
-# 1. 頁面設定
+# 1. 頁面設定 (移除頂部 padding，讓內容貼頂)
 st.set_page_config(page_title="戰情室", layout="wide", page_icon="🛡️")
 
-# 2. 注入 CSS：防閃爍 + 手機版極致壓縮
+# 2. 注入 CSS：防閃爍 + 極致壓縮版面
 st.markdown("""
     <style>
-    /* 隱藏卷軸 */
+    /* 隱藏卷軸 & Loading 遮罩 */
     div[data-testid="stFragment"] ::-webkit-scrollbar { display: none !important; width: 0px !important; }
-    div[data-testid="stFragment"] { scrollbar-width: none !important; overflow: hidden !important; }
-    
-    /* 隱藏 Loading 遮罩 */
-    div[data-testid="stFragment"] { animation: none !important; transition: none !important; opacity: 1 !important; }
+    div[data-testid="stFragment"] { scrollbar-width: none !important; overflow: hidden !important; animation: none !important; transition: none !important; opacity: 1 !important; }
     div[class*="stShim"] { display: none !important; }
     
     /* 圖表背景黑化 */
     div[data-testid="stPlotlyChart"] { background-color: #0E1117 !important; }
     iframe { background-color: #0E1117 !important; }
     
-    /* 🔥 極致壓縮：移除頂部留白，讓內容直接貼頂 */
+    /* 🔥 極致壓縮：移除所有頂部留白 */
     .block-container { 
-        padding-top: 0.5rem !important; 
+        padding-top: 0.1rem !important; 
         padding-bottom: 2rem !important; 
         padding-left: 0.5rem !important;
         padding-right: 0.5rem !important;
     }
+    header { visibility: hidden !important; } /* 隱藏 Streamlit 頂部漢堡選單列 (可選) */
     
     /* 讓輸入框更緊湊 */
     div[data-testid="stTextInput"] { margin-bottom: 0px !important; }
     div[data-testid="stSelectbox"] { margin-bottom: 0px !important; }
-    
-    /* 調整 Toggle 的邊距 */
     div[data-testid="stCheckbox"] { margin-top: 5px !important; }
     </style>
 """, unsafe_allow_html=True)
@@ -57,7 +53,6 @@ else:
 
 # 5. Helper Functions
 def reset_monitor():
-    """參數改變時，強制關閉監控並重啟"""
     if st.session_state.get('auto_refresh_state'): 
         st.session_state['auto_refresh_state'] = False 
         st.session_state['pending_restart'] = True    
@@ -79,14 +74,13 @@ def update_symbol(symbol):
 
 # 自動重啟邏輯
 if st.session_state['pending_restart']:
-    with st.spinner("⏳ 重啟中..."):
+    with st.spinner("⏳..."):
         time.sleep(0.5) 
         st.session_state['pending_restart'] = False 
         st.session_state['auto_refresh_state'] = True 
         st.rerun()
 
 # --- 頂部控制列 (緊湊佈局) ---
-# c1: 代號, c2: 週期, c3: 開關
 c1, c2, c3 = st.columns([1.2, 0.8, 1])
 
 with c1:
@@ -106,6 +100,7 @@ if user_input_val:
     if code and code != st.session_state['target_symbol']:
         st.session_state['target_symbol'] = code
 
+# 🔥 確保變數已定義 (防止 NameError)
 resolved_code, resolved_name = get_stock_code(st.session_state['target_symbol'])
 
 # 8. Fragment 儀表板
@@ -120,35 +115,23 @@ def display_dashboard():
             # 計算顏色
             current_price = stats['signal_price']
             last_vwap = df['VWAP'].iloc[-1] if not df.empty and 'VWAP' in df.columns else 0
+            price_color = "#FF5252" if current_price > last_vwap else "#00E676"
             
-            # 價格顏色：大於 VWAP 亮綠，小於 VWAP 亮紅 (美股習慣) -> 或是台股習慣 (紅漲綠跌)
-            # 這裡我們用台股習慣：如果 > 昨收 是紅的，但這裡沒有昨收，我們先用 > VWAP 來標示強弱
-            price_color = "#FF5252" if current_price > last_vwap else "#00E676" # 假設紅是強
-            
-            # 🔥 單行儀表板 (HUD) 🔥
-            # 使用 Flexbox 讓所有資訊擠在同一行
-            st.markdown(f"""
-            <div style="
-                display: flex; 
-                justify-content: space-between; 
-                align-items: center; 
-                background-color: #262730; 
-                padding: 10px 15px; 
-                border-radius: 8px; 
-                margin-bottom: 10px;
-                border: 1px solid #444;
-            ">
-                <div style="display: flex; align-items: baseline; gap: 8px;">
-                    <span style="font-size: 1.1rem; font-weight: bold; color: #FFF;">{resolved_code}</span>
-                    <span style="font-size: 1.6rem; font-weight: bold; color: {price_color};">{current_price:.2f}</span>
-                </div>
-                
-                <div style="text-align: right;">
-                    <div style="font-size: 0.9rem; color: #CCC;">VWAP <span style="color: yellow; font-weight: bold;">{last_vwap:.2f}</span></div>
-                    <div style="font-size: 0.8rem; color: #888;">{stats['signal']}</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            # 🔥 HUD 修復版：移除所有縮排，確保 HTML 正確渲染 🔥
+            # 並使用 display:flex 讓它變成單行
+            hud_html = f"""
+<div style="display: flex; justify-content: space-between; align-items: center; background-color: #262730; padding: 5px 10px; border-radius: 6px; border: 1px solid #444; margin-bottom: 5px; margin-top: 5px;">
+    <div style="display: flex; align-items: baseline; gap: 8px;">
+        <span style="font-size: 1rem; font-weight: bold; color: #FFF;">{resolved_code}</span>
+        <span style="font-size: 1.4rem; font-weight: bold; color: {price_color};">{current_price:.2f}</span>
+    </div>
+    <div style="text-align: right; line-height: 1;">
+        <div style="font-size: 0.75rem; color: #CCC;">VWAP <span style="color: yellow; font-weight: bold;">{last_vwap:.2f}</span></div>
+        <div style="font-size: 0.75rem; color: #888;">{stats['signal']}</div>
+    </div>
+</div>
+"""
+            st.markdown(hud_html, unsafe_allow_html=True)
 
             # 繪圖
             fig = go.Figure()
@@ -164,13 +147,13 @@ def display_dashboard():
 
             # 🔥 圖表設定：縮放視角鎖定
             fig.update_layout(
-                height=420, # 稍微加大一點點，因為上面省了很多空間
+                height=450, # 加大高度，因為省下了標題和HUD的空間
                 template="plotly_dark", 
                 plot_bgcolor='#0E1117', paper_bgcolor='#0E1117', font=dict(color='white'),
                 xaxis=dict(showgrid=True, gridcolor='#333', type='category'),
                 yaxis=dict(showgrid=True, gridcolor='#333'),
                 margin=dict(l=0, r=0, t=5, b=0),
-                uirevision=resolved_code, # 👈 鎖定縮放
+                uirevision=resolved_code, # 👈 鎖定縮放：只要代號沒變，縮放就不變
                 transition={'duration': 0} 
             )
             
