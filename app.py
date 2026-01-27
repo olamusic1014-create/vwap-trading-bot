@@ -45,7 +45,7 @@ if 'pending_restart' not in st.session_state: st.session_state['pending_restart'
 if 'scan_results' not in st.session_state: st.session_state['scan_results'] = []
 if 'sentiment_cache' not in st.session_state: st.session_state['sentiment_cache'] = {}
 
-# 4. Secrets 自動讀取 (不顯示在 UI)
+# 4. Secrets 自動讀取
 FUGLE_KEY = st.secrets.get("FUGLE_KEY", None)
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", None)
 
@@ -73,42 +73,49 @@ def update_symbol(symbol):
     st.session_state['input_field'] = symbol.split('.')[0]
     reset_monitor()
 
-# 🔥 核心修正：正確呼叫 AI 進行分析 (只用 Secrets Key)
-def run_sentiment_analysis(stock_code):
-    if not HAS_HEAT_MODULE: return 50
-    
-    # 檢查快取
-    if stock_code in st.session_state['sentiment_cache']:
-        return st.session_state['sentiment_cache'][stock_code]
+# 🔥 強力除錯版分析函式
+def run_sentiment_analysis_debug(stock_code):
+    if not HAS_HEAT_MODULE: 
+        st.error("❌ 找不到 stock_heat_analyzer.py 模組！請檢查檔案是否上傳。")
+        return 50
     
     try:
         # 1. 爬取新聞
+        # st.toast(f"🕷️ 正在爬取 {stock_code} 的新聞...")
         results = asyncio.run(heat.run_analysis(stock_code.split('.')[0]))
         
-        # 2. 整理新聞格式
+        # 2. 整理新聞
         all_news = []
         for res in results:
             if isinstance(res, list): all_news.extend(res)
             
-        score = 50
+        st.toast(f"📰 抓到 {len(all_news)} 則新聞")
         
-        # 3. 呼叫 AI (使用 Secrets 裡的 Key)
-        if is_ai_ready and all_news:
-            # 🔥 這裡使用 Secrets Key 呼叫，才能拿到 80+ 的分數
+        if len(all_news) == 0:
+            st.warning("⚠️ 沒抓到任何新聞，爬蟲可能被擋或目標無新聞。")
+            return 50
+
+        # 3. 呼叫 AI
+        score = 50
+        if is_ai_ready:
+            st.toast("🧠 正在呼叫 Gemini 分析...")
             ai_score, ai_report, model = heat.analyze_with_gemini_requests(GEMINI_API_KEY, stock_code, all_news)
+            
             if ai_score is not None:
                 score = ai_score
+                st.toast(f"✅ AI 評分成功: {score} 分")
             else:
+                st.error(f"❌ AI 分析失敗: {ai_report}")
                 score = heat.calculate_score_keyword_fallback(all_news)
         else:
-            # 如果沒有 Key，只能用關鍵字 (通常 50-60 分)
+            st.warning("⚠️ 沒設定 Gemini Key，使用關鍵字評分")
             score = heat.calculate_score_keyword_fallback(all_news)
             
         st.session_state['sentiment_cache'][stock_code] = score
         return score
 
     except Exception as e:
-        print(f"Sentiment Error: {e}")
+        st.error(f"❌ 嚴重錯誤: {str(e)}")
         return 50
 
 # 重啟邏輯
@@ -146,9 +153,10 @@ def display_dashboard():
     if not resolved_code: return
 
     with st.container(height=650, border=False):
+        # 傳入 Secrets Key
         df, stats = get_orb_signals(
             resolved_code, 
-            FUGLE_KEY, # 直接傳入 Secrets Key
+            FUGLE_KEY, 
             timeframe=selected_tf_code,
             sentiment_score=current_sentiment
         )
@@ -159,7 +167,6 @@ def display_dashboard():
             price_color = "#FF5252" if current_price > last_vwap else "#00E676"
             pct_change = stats.get('pct_change', 0) * 100
             
-            # 顏色邏輯
             strat_color = "#FFD700" if "接刀" in stats['strategy_name'] else "#00BFFF"
             sentiment_color = "#FF4444" if current_sentiment > 80 else ("#00BFFF" if current_sentiment < 40 else "#888")
             
@@ -194,41 +201,27 @@ def display_dashboard():
 
 if resolved_code:
     display_dashboard()
+    
+    # 🔥 獨立顯示按鈕，強制觸發更新
+    c_btn1, c_btn2 = st.columns([1, 1])
+    with c_btn1:
+        if st.button(f"🧠 強制更新 {resolved_code} 分析", type="primary", use_container_width=True):
+            if HAS_HEAT_MODULE and resolved_code:
+                with st.spinner("🚀 AI 正在深度分析中 (請稍候 10 秒)..."):
+                    s = run_sentiment_analysis_debug(resolved_code)
+                    if s > 50:
+                        st.success(f"更新成功！最新分數: {s}")
+                        time.sleep(1)
+                        st.rerun()
+            else:
+                st.error("找不到分析模組或代號")
+    with c_btn2:
+        if st.button("🔥 全市場掃描", use_container_width=True):
+            st.session_state['scan_results'] = screen_hot_stocks(limit=15)
 else:
     st.warning("請輸入股票代號")
 
-# --- 底部設定區 (完全不顯示 Key 輸入框) ---
-with st.expander("🛠️ 設定 / 智慧選股 / 情緒分析"):
-    
-    # 狀態檢查
-    if is_key_loaded: 
-        st.success("✅ 富果 API Key 已載入 (Secrets)")
-    else: 
-        st.warning("⚠️ 富果 API Key 未設定，使用 Yahoo 延遲報價")
-        
-    if is_ai_ready:
-        st.success("🧠 Gemini API Key 已載入 (Secrets)")
-    else:
-        st.error("❌ Gemini API Key 未設定，AI 分析無法啟動！請至 Secrets 設定。")
-
-    # 手動觸發分析按鈕
-    if st.button(f"🧠 分析 {resolved_code} 市場情緒"):
-        if HAS_HEAT_MODULE and resolved_code:
-            if is_ai_ready:
-                with st.spinner("AI 正在閱讀新聞 (這需要幾秒鐘)..."):
-                    s = run_sentiment_analysis(resolved_code)
-                    st.success(f"AI 分析完成！分數: {s}")
-                    time.sleep(1)
-                    st.rerun()
-            else:
-                st.error("請先在 Secrets 設定 GEMINI_API_KEY")
-        else:
-            st.error("找不到分析模組或代號")
-
-    if st.button("🔥 掃描全市場熱門股"):
-        with st.spinner("掃描中..."):
-            st.session_state['scan_results'] = screen_hot_stocks(limit=15)
-
+# 選股結果
 if st.session_state['scan_results']:
     st.divider()
     st.markdown("##### 掃描結果")
@@ -238,3 +231,20 @@ if st.session_state['scan_results']:
         c2.write(f"波: {item['volatility']:.1f}%")
         target = item['symbol'].split('.')[0]
         c3.button("🔍", key=f"btn_{item['symbol']}", on_click=update_symbol, args=(f"{target}.TW",))
+
+# --- 底部狀態檢查 (方便你確認 Key 是否有載入) ---
+with st.expander("🛠️ 系統狀態檢查"):
+    if is_key_loaded: 
+        st.success("✅ FUGLE_KEY: OK")
+    else: 
+        st.error("❌ FUGLE_KEY: Missing")
+        
+    if is_ai_ready:
+        st.success("✅ GEMINI_API_KEY: OK")
+    else:
+        st.error("❌ GEMINI_API_KEY: Missing")
+        
+    if HAS_HEAT_MODULE:
+        st.success("✅ 爬蟲模組: OK")
+    else:
+        st.error("❌ 爬蟲模組: Missing (請上傳 stock_heat_analyzer.py)")
