@@ -49,7 +49,7 @@ else:
 st.sidebar.divider()
 user_input_val = st.sidebar.text_input("股票代號", key="input_field")
 
-# 🔥 新增：週期選擇器
+# 週期選擇器
 timeframe_map = {
     "1 分鐘": "1T",
     "5 分鐘": "5T",
@@ -60,8 +60,8 @@ timeframe_map = {
 selected_tf_label = st.sidebar.selectbox("K 線週期", list(timeframe_map.keys()), index=0)
 selected_tf_code = timeframe_map[selected_tf_label]
 
-auto_refresh = st.sidebar.checkbox("🔄 即時監控 (每5秒)", value=False)
-run_btn = st.sidebar.button("刷新")
+# 🔥 改用 run_every 參數，所以這裡只需要一個開關
+auto_refresh = st.sidebar.toggle("🔄 啟用即時監控", value=False)
 
 st.sidebar.divider()
 if st.sidebar.button("🔥 全市場智能選股"):
@@ -74,13 +74,19 @@ if user_input_val:
     if code and code != st.session_state['target_symbol']:
         st.session_state['target_symbol'] = code
 
-# --- 主畫面 ---
+# --- 主畫面邏輯 ---
 resolved_code, resolved_name = get_stock_code(st.session_state['target_symbol'])
 
 if not resolved_code:
     st.error(f"無效代號: {st.session_state['target_symbol']}")
-else:
-    # 🔥 傳入選擇的週期
+
+# 🔥 神奇魔法：使用 @st.fragment 建立獨立刷新區塊
+# 根據 auto_refresh 的狀態決定刷新頻率：如果是 True 就每 5 秒刷一次，False 就不自動刷
+@st.fragment(run_every=5 if auto_refresh else None)
+def display_dashboard():
+    if not resolved_code: return
+
+    # 這裡的代碼只會在 fragment 內部執行，不會導致整個頁面重整
     df, stats = get_orb_signals(resolved_code, st.session_state['fugle_key'], timeframe=selected_tf_code)
     
     if df is not None:
@@ -116,28 +122,31 @@ else:
                 name="VWAP"
             ))
         
-        # 標記進出場點
+        # 標記
         if stats.get('entry_time'):
             fig.add_trace(go.Scatter(x=[stats['entry_time']], y=[stats['entry_price']], mode='markers', marker=dict(size=15, color='#FFD700'), name="買進"))
         if stats.get('exit_time'):
              fig.add_trace(go.Scatter(x=[stats['exit_time']], y=[stats['exit_price']], mode='markers', marker=dict(size=15, color='red', symbol='x', line=dict(width=2, color='white')), name="出場"))
 
+        # 🔥 關鍵防閃爍：加入 uirevision
+        # 這樣當數據更新時，Plotly 不會重置縮放狀態和相機視角
         fig.update_layout(
             height=450, template="plotly_dark", 
             plot_bgcolor='#0E1117', paper_bgcolor='#0E1117', font=dict(color='white'),
-            xaxis=dict(showgrid=True, gridcolor='#333', type='category'), # 使用 category 軸避免空窗期留白
+            xaxis=dict(showgrid=True, gridcolor='#333', type='category'),
             yaxis=dict(showgrid=True, gridcolor='#333'),
-            margin=dict(l=0, r=0, t=30, b=0)
+            margin=dict(l=0, r=0, t=30, b=0),
+            uirevision='constant' # 👈 這行是關鍵！鎖定 UI 狀態
         )
         st.plotly_chart(fig, use_container_width=True)
-        
-        if auto_refresh:
-            time.sleep(5) 
-            st.rerun()
-
     else:
         st.error(f"無法取得數據 (Source: {stats.get('source')})")
 
+# 執行 fragment
+if resolved_code:
+    display_dashboard()
+
+# --- 顯示選股結果 (放在 fragment 外面，不需要一直刷新) ---
 if 'scan_results' in st.session_state and st.session_state['scan_results']:
     st.divider()
     st.subheader("🔥 智能選股結果")
