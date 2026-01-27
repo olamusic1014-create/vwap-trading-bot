@@ -6,7 +6,7 @@ import numpy as np
 import time
 import random
 import streamlit as st
-from fugle_marketdata import RestClient # 引入富果
+from fugle_marketdata import RestClient 
 
 # --- 熱門股池 ---
 MARKET_POOL = [
@@ -22,72 +22,66 @@ MARKET_POOL = [
     '2353', '2323', '2352', '3260', '6239'
 ]
 
-# --- 1. 海選部隊：使用 Yahoo 進行大量掃描 (維持防鎖機制) ---
+# --- 1. 海選部隊：使用 Yahoo ---
 @st.cache_data(ttl=900)
 def screen_hot_stocks(limit=15):
     screened_list = []
     print("正在掃描市場熱門股 (Yahoo)...")
     
     for symbol_raw in MARKET_POOL:
-        symbol = f"{symbol_raw}.TW" # Yahoo 需要 .TW
-        time.sleep(random.uniform(0.1, 0.25)) # 稍微快一點，但保持禮貌
+        symbol = f"{symbol_raw}.TW" 
+        time.sleep(random.uniform(0.1, 0.25)) 
         
         try:
             ticker = yf.Ticker(symbol)
             hist = ticker.history(period="3mo", interval="1d")
-            
             if len(hist) < 20: continue
             
             ma20 = hist['Close'].rolling(window=20).mean().iloc[-1]
             current_price = hist['Close'].iloc[-1]
-            
             if current_price < ma20: continue
                 
             hist['Range_Pct'] = ((hist['High'] - hist['Low']) / hist['Close']) * 100
             avg_volatility = hist['Range_Pct'].tail(10).mean()
-            
             if avg_volatility >= 2.0:
-                screened_list.append({
-                    'symbol': symbol,
-                    'volatility': avg_volatility
-                })
+                screened_list.append({'symbol': symbol, 'volatility': avg_volatility})
         except: continue
         
     screened_list.sort(key=lambda x: x['volatility'], reverse=True)
     return screened_list[:limit]
 
-# --- 2. 特種部隊：使用 Fugle 進行精準打擊 (即時 K 線) ---
+# --- 2. 特種部隊：富果 API (回傳 tuple: df, error_msg) ---
 def get_fugle_kline(symbol_id, api_key):
     try:
-        client = RestClient(api_key=api_key)
-        stock = client.stock  # Initialize stock client
+        # 🔥 自動清理 Key 的空白
+        clean_key = api_key.strip()
+        client = RestClient(api_key=clean_key)
+        stock = client.stock
         
-        # 抓取當日 K 線 (intraday candles)
-        # 富果免費版限制：只能抓近期的，但對當沖夠用了
         candles = stock.intraday.candles(symbol=symbol_id)
         
-        if not candles or 'data' not in candles:
-            return None
+        if not candles:
+            return None, "回傳資料為空 (可能是代號錯誤)"
+        if 'error' in candles: # 富果回傳錯誤代碼
+            return None, f"API 錯誤: {candles.get('error')}"
+        if 'data' not in candles:
+            return None, "資料格式錯誤 (缺少 data 欄位)"
         
         data = candles['data']
-        if not data: return None
+        if not data: return None, "該股票今日尚無成交資料"
 
         df = pd.DataFrame(data)
-        
-        # 整理格式以符合我們策略的要求
         df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
-        
-        # 處理時間：富果回傳的是 UTC，要轉成台灣時間
         df['Date'] = pd.to_datetime(df['date'])
         df.set_index('Date', inplace=True)
         df.index = df.index.tz_convert('Asia/Taipei')
         
-        return df[['Open', 'High', 'Low', 'Close', 'Volume']]
-    except Exception as e:
-        print(f"Fugle Error: {e}")
-        return None
+        return df[['Open', 'High', 'Low', 'Close', 'Volume']], None # 成功，錯誤為 None
 
-# --- 3. 備用方案：Yahoo 即時 (當沒有 API Key 時) ---
+    except Exception as e:
+        return None, str(e) # 回傳例外錯誤
+
+# --- 3. 備用方案：Yahoo 即時 ---
 @st.cache_data(ttl=30)
 def get_realtime_quote_yahoo(symbol):
     try:
@@ -97,29 +91,29 @@ def get_realtime_quote_yahoo(symbol):
     except: pass
     return None
 
-# --- 主邏輯：策略訊號產生器 ---
-@st.cache_data(ttl=5) # 如果用 API，快取可以縮短到 5 秒，甚至更短
+# --- 主邏輯 ---
+@st.cache_data(ttl=5)
 def get_orb_signals(symbol_input, fugle_api_key=None):
-    # 處理代號格式
-    symbol_id = symbol_input.split('.')[0] # 2301
-    symbol_tw = f"{symbol_id}.TW"          # 2301.TW
+    symbol_id = symbol_input.split('.')[0]
+    symbol_tw = f"{symbol_id}.TW"
     
     df = None
     source = "Yahoo (延遲/模擬)"
+    fugle_error_msg = None # 儲存錯誤訊息
     
-    # A. 優先嘗試 Fugle (如果有 Key)
+    # A. 優先嘗試 Fugle
     if fugle_api_key:
-        df = get_fugle_kline(symbol_id, fugle_api_key)
+        df, error = get_fugle_kline(symbol_id, fugle_api_key)
         if df is not None and not df.empty:
             source = "Fugle (真即時 API)"
+        else:
+            fugle_error_msg = error # 紀錄失敗原因
     
-    # B. 如果沒 Key 或 Fugle 失敗，使用 Yahoo + 人工補點
+    # B. 降級使用 Yahoo
     if df is None or df.empty:
         try:
             ticker = yf.Ticker(symbol_tw)
             df = ticker.history(period="1d", interval="1m")
-            
-            # 嘗試補上最新價 (Stitching)
             realtime_price = get_realtime_quote_yahoo(symbol_tw)
             if not df.empty and realtime_price:
                 last_time = df.index[-1]
@@ -135,12 +129,10 @@ def get_orb_signals(symbol_input, fugle_api_key=None):
     if df is None or df.empty:
         return None, {"error": "無法取得數據", "source": "None"}
 
-    # --- 以下是策略運算 (通用邏輯) ---
-    # 取得日線趨勢 (這部分永遠用 Yahoo，節省 Fugle 額度)
+    # --- 策略運算 (同前) ---
     try:
         ticker_d = yf.Ticker(symbol_tw)
         df_daily = ticker_d.history(period="3mo", interval="1d")
-        
         if not df_daily.empty and len(df_daily) >= 20:
             df_daily['MA20'] = df_daily['Close'].rolling(window=20).mean()
             prev = df_daily.iloc[-2]
@@ -153,12 +145,10 @@ def get_orb_signals(symbol_input, fugle_api_key=None):
     except:
         context = {"trend": "Unknown", "adr_pct": 0}
 
-    # VWAP 計算
     df['Cum_Vol'] = df['Volume'].cumsum()
     df['Cum_Vol_Price'] = (df['Close'] * df['Volume']).cumsum()
     df['VWAP'] = df['Cum_Vol_Price'] / df['Cum_Vol']
 
-    # 策略判斷
     market_open = df.index[0]
     start_scan = market_open + pd.Timedelta(minutes=15)
     scan_data = df[df.index >= start_scan]
@@ -170,26 +160,21 @@ def get_orb_signals(symbol_input, fugle_api_key=None):
     
     for t, row in scan_data.iterrows():
         if pd.isna(row['VWAP']): continue
-        
         if row['High'] > high_h: high_h = row['High']
         dev = (row['Close'] - row['VWAP']) / row['VWAP']
         if dev > max_dev: max_dev = dev
             
         if not entry_time:
-            # 策略：強度 > 0.6%, 回檔 > 0.6%, 支撐 1.5%
             if max_dev >= 0.006:
                 if high_h > 0 and row['Close'] < high_h * 0.994:
                     if row['Low'] <= row['VWAP'] * 1.015:
                         if row['Close'] > row['Open'] and row['Close'] >= row['VWAP']:
                             entry_time = t
                             entry_price = row['Close']
-        
         elif t > entry_time:
-            # 出場：停損 1.5% 或 移動停利
             stop = entry_price * 0.985
             if row['High'] >= entry_price * 1.015: stop = max(stop, entry_price * 1.005)
             if row['High'] >= entry_price * 1.025: stop = max(stop, entry_price * 1.015)
-            
             if row['Low'] <= stop:
                 exit_time = t
                 exit_price = stop
@@ -208,10 +193,10 @@ def get_orb_signals(symbol_input, fugle_api_key=None):
         "entry_time": entry_time, "entry_price": entry_price,
         "exit_time": exit_time, "exit_price": exit_price,
         "vwap_data": df['VWAP'], "source": source,
-        "context": context, "is_realtime": (source == "Fugle (真即時 API)")
+        "context": context, "is_realtime": (source == "Fugle (真即時 API)"),
+        "fugle_error": fugle_error_msg # 🔥 傳遞錯誤訊息給前端
     }
     return df, stats
 
-# 為了相容性，保留空函式
 def backtest_strategy(symbol): return None
 def backtest_past_week(symbol): return []
