@@ -14,8 +14,7 @@ if 'target_symbol' not in st.session_state: st.session_state['target_symbol'] = 
 if 'fugle_key' not in st.session_state: st.session_state['fugle_key'] = ""
 if 'input_field' not in st.session_state: st.session_state['input_field'] = "2301"
 
-# 🔥 核心升級：自動讀取雲端 Secrets
-# 檢查 Streamlit 的保險箱裡有沒有 "FUGLE_KEY"
+# 自動讀取雲端 Secrets
 if "FUGLE_KEY" in st.secrets:
     st.session_state['fugle_key'] = st.secrets["FUGLE_KEY"]
     is_key_loaded = True
@@ -41,19 +40,26 @@ st.title("🛡️ VWAP 智能戰情室 (Fugle 加速版)")
 # --- 側邊欄 ---
 st.sidebar.header("設定")
 
-# 🔥 根據是否自動載入 Key 顯示不同畫面
 if is_key_loaded:
     st.sidebar.success("✅ API Key 已從雲端載入")
-    # 這裡可以選擇不顯示 Key，或者顯示部分遮碼
-    st.sidebar.caption("系統已自動連接富果 API")
 else:
-    # 如果沒設定 Secrets，才顯示手動輸入框
     api_key = st.sidebar.text_input("🔑 富果 API Key (選填)", value=st.session_state['fugle_key'], type="password")
     if api_key: st.session_state['fugle_key'] = api_key
-    st.sidebar.info("💡 提示：你可以在 Streamlit Settings -> Secrets 設定 FUGLE_KEY，以後就不用手動輸入了！")
 
 st.sidebar.divider()
 user_input_val = st.sidebar.text_input("股票代號", key="input_field")
+
+# 🔥 新增：週期選擇器
+timeframe_map = {
+    "1 分鐘": "1T",
+    "5 分鐘": "5T",
+    "15 分鐘": "15T",
+    "30 分鐘": "30T",
+    "60 分鐘": "60T"
+}
+selected_tf_label = st.sidebar.selectbox("K 線週期", list(timeframe_map.keys()), index=0)
+selected_tf_code = timeframe_map[selected_tf_label]
+
 auto_refresh = st.sidebar.checkbox("🔄 即時監控 (每5秒)", value=False)
 run_btn = st.sidebar.button("刷新")
 
@@ -74,13 +80,14 @@ resolved_code, resolved_name = get_stock_code(st.session_state['target_symbol'])
 if not resolved_code:
     st.error(f"無效代號: {st.session_state['target_symbol']}")
 else:
-    df, stats = get_orb_signals(resolved_code, st.session_state['fugle_key'])
+    # 🔥 傳入選擇的週期
+    df, stats = get_orb_signals(resolved_code, st.session_state['fugle_key'], timeframe=selected_tf_code)
     
     if df is not None:
         if stats.get('fugle_error'):
             st.warning(f"⚠️ 富果連線失敗，已切換回 Yahoo。原因：{stats['fugle_error']}")
 
-        st.subheader(f"📊 {resolved_name} ({resolved_code})")
+        st.subheader(f"📊 {resolved_name} ({resolved_code}) - {selected_tf_label}")
         
         src = stats.get('source', 'Unknown')
         src_color = "#00FF00" if "Fugle" in src else "orange"
@@ -93,10 +100,23 @@ else:
         col3.metric("訊號狀態", stats['signal'])
 
         fig = go.Figure()
-        fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="價格"))
-        if 'vwap_data' in stats:
-            fig.add_trace(go.Scatter(x=df.index, y=stats['vwap_data'], mode='lines', line=dict(color='yellow', width=2), name="VWAP"))
         
+        # 繪製 K 線
+        fig.add_trace(go.Candlestick(
+            x=df.index, 
+            open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], 
+            name="價格"
+        ))
+        
+        # 繪製 VWAP
+        if 'vwap_data' in stats:
+            fig.add_trace(go.Scatter(
+                x=df.index, y=stats['vwap_data'], 
+                mode='lines', line=dict(color='yellow', width=2), 
+                name="VWAP"
+            ))
+        
+        # 標記進出場點
         if stats.get('entry_time'):
             fig.add_trace(go.Scatter(x=[stats['entry_time']], y=[stats['entry_price']], mode='markers', marker=dict(size=15, color='#FFD700'), name="買進"))
         if stats.get('exit_time'):
@@ -105,7 +125,8 @@ else:
         fig.update_layout(
             height=450, template="plotly_dark", 
             plot_bgcolor='#0E1117', paper_bgcolor='#0E1117', font=dict(color='white'),
-            xaxis=dict(showgrid=True, gridcolor='#333'), yaxis=dict(showgrid=True, gridcolor='#333'),
+            xaxis=dict(showgrid=True, gridcolor='#333', type='category'), # 使用 category 軸避免空窗期留白
+            yaxis=dict(showgrid=True, gridcolor='#333'),
             margin=dict(l=0, r=0, t=30, b=0)
         )
         st.plotly_chart(fig, use_container_width=True)

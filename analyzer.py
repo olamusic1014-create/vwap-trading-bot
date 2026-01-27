@@ -50,22 +50,19 @@ def screen_hot_stocks(limit=15):
     screened_list.sort(key=lambda x: x['volatility'], reverse=True)
     return screened_list[:limit]
 
-# --- 2. 特種部隊：富果 API (回傳 tuple: df, error_msg) ---
+# --- 2. 特種部隊：富果 API ---
 def get_fugle_kline(symbol_id, api_key):
     try:
-        # 🔥 自動清理 Key 的空白
         clean_key = api_key.strip()
         client = RestClient(api_key=clean_key)
         stock = client.stock
         
+        # 抓取 1 分 K (最細顆粒度)
         candles = stock.intraday.candles(symbol=symbol_id)
         
-        if not candles:
-            return None, "回傳資料為空 (可能是代號錯誤)"
-        if 'error' in candles: # 富果回傳錯誤代碼
-            return None, f"API 錯誤: {candles.get('error')}"
-        if 'data' not in candles:
-            return None, "資料格式錯誤 (缺少 data 欄位)"
+        if not candles: return None, "回傳資料為空 (可能是代號錯誤)"
+        if 'error' in candles: return None, f"API 錯誤: {candles.get('error')}"
+        if 'data' not in candles: return None, "資料格式錯誤 (缺少 data 欄位)"
         
         data = candles['data']
         if not data: return None, "該股票今日尚無成交資料"
@@ -76,10 +73,10 @@ def get_fugle_kline(symbol_id, api_key):
         df.set_index('Date', inplace=True)
         df.index = df.index.tz_convert('Asia/Taipei')
         
-        return df[['Open', 'High', 'Low', 'Close', 'Volume']], None # 成功，錯誤為 None
+        return df[['Open', 'High', 'Low', 'Close', 'Volume']], None 
 
     except Exception as e:
-        return None, str(e) # 回傳例外錯誤
+        return None, str(e) 
 
 # --- 3. 備用方案：Yahoo 即時 ---
 @st.cache_data(ttl=30)
@@ -91,30 +88,58 @@ def get_realtime_quote_yahoo(symbol):
     except: pass
     return None
 
+# --- 工具：K 線重取樣 (Resampling) ---
+def resample_data(df, timeframe_str):
+    """
+    將 1 分 K 資料轉換成其他週期 (5分, 15分...)
+    timeframe_str: '1T', '5T', '15T', '30T', '60T'
+    """
+    if timeframe_str == '1T':
+        return df
+    
+    # 定義轉換規則
+    ohlc_dict = {
+        'Open': 'first',
+        'High': 'max',
+        'Low': 'min',
+        'Close': 'last',
+        'Volume': 'sum'
+    }
+    
+    # 執行 Resample
+    df_resampled = df.resample(timeframe_str).apply(ohlc_dict)
+    
+    # 移除沒有交易的時段 (dropna)
+    df_resampled = df_resampled.dropna(subset=['Close'])
+    
+    return df_resampled
+
 # --- 主邏輯 ---
 @st.cache_data(ttl=5)
-def get_orb_signals(symbol_input, fugle_api_key=None):
+def get_orb_signals(symbol_input, fugle_api_key=None, timeframe='1T'):
     symbol_id = symbol_input.split('.')[0]
     symbol_tw = f"{symbol_id}.TW"
     
     df = None
     source = "Yahoo (延遲/模擬)"
-    fugle_error_msg = None # 儲存錯誤訊息
+    fugle_error_msg = None
     
-    # A. 優先嘗試 Fugle
+    # A. 優先嘗試 Fugle (抓 1 分 K)
     if fugle_api_key:
         df, error = get_fugle_kline(symbol_id, fugle_api_key)
         if df is not None and not df.empty:
             source = "Fugle (真即時 API)"
         else:
-            fugle_error_msg = error # 紀錄失敗原因
+            fugle_error_msg = error
     
-    # B. 降級使用 Yahoo
+    # B. 降級使用 Yahoo (抓 1 分 K)
     if df is None or df.empty:
         try:
             ticker = yf.Ticker(symbol_tw)
             df = ticker.history(period="1d", interval="1m")
             realtime_price = get_realtime_quote_yahoo(symbol_tw)
+            
+            # 補點邏輯
             if not df.empty and realtime_price:
                 last_time = df.index[-1]
                 now = pd.Timestamp.now(tz='Asia/Taipei')
@@ -129,7 +154,12 @@ def get_orb_signals(symbol_input, fugle_api_key=None):
     if df is None or df.empty:
         return None, {"error": "無法取得數據", "source": "None"}
 
-    # --- 策略運算 (同前) ---
+    # 🔥 關鍵步驟：在這裡進行週期轉換 (1分 -> 5分/15分...)
+    # 這樣最新的補點也會被正確歸類到當下的 5 分 K 裡
+    if timeframe != '1T':
+        df = resample_data(df, timeframe)
+
+    # --- 策略運算 (基於轉換後的 df) ---
     try:
         ticker_d = yf.Ticker(symbol_tw)
         df_daily = ticker_d.history(period="3mo", interval="1d")
@@ -145,13 +175,21 @@ def get_orb_signals(symbol_input, fugle_api_key=None):
     except:
         context = {"trend": "Unknown", "adr_pct": 0}
 
+    # VWAP 計算 (會根據新的週期重新計算)
     df['Cum_Vol'] = df['Volume'].cumsum()
     df['Cum_Vol_Price'] = (df['Close'] * df['Volume']).cumsum()
     df['VWAP'] = df['Cum_Vol_Price'] / df['Cum_Vol']
 
+    # 策略邏輯適應新週期
     market_open = df.index[0]
-    start_scan = market_open + pd.Timedelta(minutes=15)
-    scan_data = df[df.index >= start_scan]
+    # 根據週期調整掃描起始點 (避免剛開盤指標不穩)
+    scan_offset = 15 if timeframe == '1T' else 1 
+    # 如果是 5 分 K，前面幾根就可以開始看了
+    
+    start_scan = market_open # + pd.Timedelta(minutes=scan_offset) 
+    # 簡化邏輯：全掃描，但 VWAP 需要一點量才準
+    
+    scan_data = df # 掃描所有 K 棒
     
     entry_time, entry_price = None, None
     exit_time, exit_price = None, None
@@ -165,6 +203,8 @@ def get_orb_signals(symbol_input, fugle_api_key=None):
         if dev > max_dev: max_dev = dev
             
         if not entry_time:
+            # 注意：這裡的條件 (0.6% 乖離) 是針對 1 分 K 設計的
+            # 切換到長週期時，這些條件可能比較難觸發，這是正常的
             if max_dev >= 0.006:
                 if high_h > 0 and row['Close'] < high_h * 0.994:
                     if row['Low'] <= row['VWAP'] * 1.015:
@@ -194,7 +234,7 @@ def get_orb_signals(symbol_input, fugle_api_key=None):
         "exit_time": exit_time, "exit_price": exit_price,
         "vwap_data": df['VWAP'], "source": source,
         "context": context, "is_realtime": (source == "Fugle (真即時 API)"),
-        "fugle_error": fugle_error_msg # 🔥 傳遞錯誤訊息給前端
+        "fugle_error": fugle_error_msg
     }
     return df, stats
 
