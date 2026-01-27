@@ -131,45 +131,46 @@ def calculate_score_keyword_fallback(news_list):
             if w in txt: score -= 5
     return max(0, min(100, score))
 
-# AI 評分 (🔥 暴力輪詢版：死纏爛打直到成功)
+# AI 評分 (🔥 全面診斷版：不會顯示空白錯誤)
 def analyze_with_gemini_requests(api_key, stock_name, news_data):
     txt = "\n".join([f"{i+1}. [{n['source']}] {n['title']}" for i, n in enumerate(news_data)])
     prompt = f"分析「{stock_name}」最新新聞情緒(0-100分)。新聞：\n{txt}\n\n格式：\nSCORE: [分數]\nSUMMARY: [簡短總結]"
     
-    # 這裡列出 Google 所有的模型，一個不行就換下一個
-    # Flash 最快，Pro 最穩，1.0 是舊版兼容
+    # 擴大模型搜尋範圍，包含舊版模型
     candidate_models = [
-        "models/gemini-1.5-flash", 
-        "models/gemini-1.5-pro", 
+        "models/gemini-1.5-flash",
         "models/gemini-pro",
+        "models/gemini-1.5-pro",
         "models/gemini-1.0-pro"
     ]
 
-    last_error_msg = ""
+    error_logs = []
 
     for model in candidate_models:
         url = f"https://generativelanguage.googleapis.com/v1beta/{model}:generateContent?key={api_key}"
         try:
-            # 嘗試呼叫
-            res = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=30)
+            # 加入 Header 確保格式正確
+            headers = {'Content-Type': 'application/json'}
+            data = {"contents": [{"parts": [{"text": prompt}]}]}
+            
+            res = requests.post(url, json=data, headers=headers, timeout=30)
             
             if res.status_code == 200:
-                # 成功！直接回傳
+                # 成功！
                 content = res.json()['candidates'][0]['content']['parts'][0]['text']
                 match = re.search(r"SCORE:\s*(\d+)", content)
                 score = int(match.group(1)) if match else 50
                 return score, content, model
             
-            elif res.status_code == 404:
-                # 404 代表此模型不可用，嘗試下一個
-                continue
             else:
-                # 其他錯誤 (如 Key 錯誤)，記錄下來
-                last_error_msg = f"Error {res.status_code}: {res.text[:100]}"
+                # 記錄具體錯誤 (包含 404)
+                error_msg = f"[{model}] {res.status_code}: {res.text}"
+                error_logs.append(error_msg)
                 
         except Exception as e:
-            last_error_msg = str(e)
+            error_logs.append(f"[{model}] Exception: {str(e)}")
             continue
             
-    # 如果全部模型都失敗，回傳最後一次的錯誤訊息給 App 顯示
-    return None, f"全部模型嘗試失敗。最後錯誤: {last_error_msg}", "error"
+    # 將所有模型的錯誤接在一起回傳，這樣您就能看到詳細原因
+    full_report = " | ".join(error_logs)
+    return None, f"診斷報告: {full_report}", "error"
