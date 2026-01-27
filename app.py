@@ -13,7 +13,7 @@ if 'target_symbol' not in st.session_state: st.session_state['target_symbol'] = 
 if 'fugle_key' not in st.session_state: st.session_state['fugle_key'] = ""
 if 'input_field' not in st.session_state: st.session_state['input_field'] = "2301"
 
-# 🔥 新增：控制自動重啟的狀態變數
+# 控制自動重啟的狀態變數
 if 'pending_restart' not in st.session_state: st.session_state['pending_restart'] = False
 
 # 自動讀取雲端 Secrets
@@ -23,11 +23,11 @@ if "FUGLE_KEY" in st.secrets:
 else:
     is_key_loaded = False
 
-# 🔥 回呼函式：當參數改變時，強制關閉監控並安排重啟
+# 回呼函式：參數改變時，強制關閉監控並安排重啟
 def reset_monitor():
-    if st.session_state.get('auto_refresh_state'): # 如果目前是開啟的
-        st.session_state['auto_refresh_state'] = False # 強制關閉開關
-        st.session_state['pending_restart'] = True    # 標記需要重啟
+    if st.session_state.get('auto_refresh_state'): 
+        st.session_state['auto_refresh_state'] = False 
+        st.session_state['pending_restart'] = True    
 
 def get_stock_code(user_input):
     user_input = str(user_input).strip().upper()
@@ -42,7 +42,6 @@ def get_stock_code(user_input):
 def update_symbol(symbol):
     st.session_state['target_symbol'] = symbol
     st.session_state['input_field'] = symbol.split('.')[0]
-    # 選股點擊時也觸發重啟邏輯
     reset_monitor()
 
 st.title("🛡️ VWAP 智能戰情室 (Fugle 加速版)")
@@ -58,15 +57,14 @@ else:
 
 st.sidebar.divider()
 
-# 🔥 綁定回呼函式 (on_change)
-# 當使用者輸入新的股票代號按下 Enter 時，會先執行 reset_monitor
+# 股票代號輸入 (綁定回呼)
 user_input_val = st.sidebar.text_input(
     "股票代號", 
     key="input_field", 
     on_change=reset_monitor 
 )
 
-# 週期選擇器
+# 週期選擇器 (綁定回呼)
 timeframe_map = {
     "1 分鐘": "1T",
     "5 分鐘": "5T",
@@ -74,9 +72,6 @@ timeframe_map = {
     "30 分鐘": "30T",
     "60 分鐘": "60T"
 }
-
-# 🔥 綁定回呼函式 (on_change)
-# 當使用者切換週期時，也會先執行 reset_monitor
 selected_tf_label = st.sidebar.selectbox(
     "K 線週期", 
     list(timeframe_map.keys()), 
@@ -85,22 +80,20 @@ selected_tf_label = st.sidebar.selectbox(
 )
 selected_tf_code = timeframe_map[selected_tf_label]
 
-# 🔥 即時監控開關 (綁定 key='auto_refresh_state')
-# 這樣我們才能在程式碼裡控制它的開關
+# 即時監控開關
 auto_refresh = st.sidebar.toggle(
     "🔄 啟用即時監控 (專注模式)", 
     value=False, 
     key="auto_refresh_state"
 )
 
-# 🔥 自動重啟邏輯
-# 如果發現 pending_restart 為 True，代表剛剛發生了參數修改
+# 自動重啟邏輯
 if st.session_state['pending_restart']:
     st.sidebar.warning("⏳ 參數調整中，即將重啟監控...")
-    time.sleep(1) # 等待 1 秒讓數據緩衝
-    st.session_state['pending_restart'] = False # 清除旗標
-    st.session_state['auto_refresh_state'] = True # 自動把開關打開
-    st.rerun() # 重新執行程式以進入監控迴圈
+    time.sleep(1) 
+    st.session_state['pending_restart'] = False 
+    st.session_state['auto_refresh_state'] = True 
+    st.rerun() 
 
 st.sidebar.divider()
 if st.sidebar.button("🔥 全市場智能選股"):
@@ -165,16 +158,17 @@ else:
                 xaxis=dict(showgrid=True, gridcolor='#333', type='category'),
                 yaxis=dict(showgrid=True, gridcolor='#333'),
                 margin=dict(l=0, r=0, t=30, b=0),
-                uirevision='constant'
+                uirevision='constant' # 🔥 關鍵：雖然拿掉了 key，但這行會確保視角不重置
             )
             
-            chart_spot.plotly_chart(fig, use_container_width=True, key="live_chart")
+            # 🔥 修正：移除了 key="live_chart"，避免重複 ID 報錯
+            chart_spot.plotly_chart(fig, use_container_width=True)
         else:
             warning_spot.error(f"無法取得數據 (Source: {stats.get('source')})")
 
     # 執行模式
     if auto_refresh:
-        # 如果正在監控中，進入不閃爍迴圈
+        # 不閃爍迴圈
         while True:
             render_dashboard()
             time.sleep(5)
