@@ -9,9 +9,18 @@ import twstock
 
 st.set_page_config(page_title="智能選股戰情室", layout="wide", page_icon="🛡️")
 
+# --- 初始化 Session State ---
 if 'target_symbol' not in st.session_state: st.session_state['target_symbol'] = "2301.TW"
 if 'fugle_key' not in st.session_state: st.session_state['fugle_key'] = ""
 if 'input_field' not in st.session_state: st.session_state['input_field'] = "2301"
+
+# 🔥 核心升級：自動讀取雲端 Secrets
+# 檢查 Streamlit 的保險箱裡有沒有 "FUGLE_KEY"
+if "FUGLE_KEY" in st.secrets:
+    st.session_state['fugle_key'] = st.secrets["FUGLE_KEY"]
+    is_key_loaded = True
+else:
+    is_key_loaded = False
 
 def get_stock_code(user_input):
     user_input = str(user_input).strip().upper()
@@ -29,9 +38,19 @@ def update_symbol(symbol):
 
 st.title("🛡️ VWAP 智能戰情室 (Fugle 加速版)")
 
+# --- 側邊欄 ---
 st.sidebar.header("設定")
-api_key = st.sidebar.text_input("🔑 富果 API Key (選填)", value=st.session_state['fugle_key'], type="password")
-if api_key: st.session_state['fugle_key'] = api_key
+
+# 🔥 根據是否自動載入 Key 顯示不同畫面
+if is_key_loaded:
+    st.sidebar.success("✅ API Key 已從雲端載入")
+    # 這裡可以選擇不顯示 Key，或者顯示部分遮碼
+    st.sidebar.caption("系統已自動連接富果 API")
+else:
+    # 如果沒設定 Secrets，才顯示手動輸入框
+    api_key = st.sidebar.text_input("🔑 富果 API Key (選填)", value=st.session_state['fugle_key'], type="password")
+    if api_key: st.session_state['fugle_key'] = api_key
+    st.sidebar.info("💡 提示：你可以在 Streamlit Settings -> Secrets 設定 FUGLE_KEY，以後就不用手動輸入了！")
 
 st.sidebar.divider()
 user_input_val = st.sidebar.text_input("股票代號", key="input_field")
@@ -58,7 +77,6 @@ else:
     df, stats = get_orb_signals(resolved_code, st.session_state['fugle_key'])
     
     if df is not None:
-        # 🔥 錯誤診斷區
         if stats.get('fugle_error'):
             st.warning(f"⚠️ 富果連線失敗，已切換回 Yahoo。原因：{stats['fugle_error']}")
 
