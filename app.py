@@ -8,12 +8,45 @@ import time
 
 st.set_page_config(page_title="智能選股戰情室", layout="wide", page_icon="🛡️")
 
+# 🔥🔥🔥 終極防閃爍 CSS 核彈 🔥🔥🔥
+# 這段代碼會強制禁止 Streamlit 在運算時把畫面變灰/變透明
+st.markdown("""
+    <style>
+    /* 1. 針對 Fragment 容器，強制移除所有過場動畫 */
+    div[data-testid="stFragment"] {
+        animation: none !important;
+        transition: none !important;
+        opacity: 1 !important;
+        filter: none !important;
+    }
+    
+    /* 2. 針對 Fragment 內的所有子元素，繼承不透明屬性 */
+    div[data-testid="stFragment"] * {
+        animation: none !important;
+        transition: none !important;
+        opacity: 1 !important;
+        filter: none !important;
+    }
+
+    /* 3. 隱藏右上角的 "Running" 小人動畫 */
+    div[data-testid="stStatusWidget"] {
+        visibility: hidden;
+    }
+
+    /* 4. 鎖定 Plotly 圖表容器，防止高度坍塌 */
+    div[data-testid="stPlotlyChart"] {
+        height: 450px !important;
+        overflow: hidden;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 # --- 初始化 Session State ---
 if 'target_symbol' not in st.session_state: st.session_state['target_symbol'] = "2301.TW"
 if 'fugle_key' not in st.session_state: st.session_state['fugle_key'] = ""
 if 'input_field' not in st.session_state: st.session_state['input_field'] = "2301"
 
-# 控制自動重啟的狀態變數
+# 控制自動重啟
 if 'pending_restart' not in st.session_state: st.session_state['pending_restart'] = False
 
 # 自動讀取雲端 Secrets
@@ -23,7 +56,7 @@ if "FUGLE_KEY" in st.secrets:
 else:
     is_key_loaded = False
 
-# 回呼函式：參數改變時，強制關閉監控並安排重啟
+# 回呼函式
 def reset_monitor():
     if st.session_state.get('auto_refresh_state'): 
         st.session_state['auto_refresh_state'] = False 
@@ -57,14 +90,12 @@ else:
 
 st.sidebar.divider()
 
-# 股票代號輸入 (綁定回呼)
 user_input_val = st.sidebar.text_input(
     "股票代號", 
     key="input_field", 
     on_change=reset_monitor 
 )
 
-# 週期選擇器 (綁定回呼)
 timeframe_map = {
     "1 分鐘": "1T",
     "5 分鐘": "5T",
@@ -80,14 +111,12 @@ selected_tf_label = st.sidebar.selectbox(
 )
 selected_tf_code = timeframe_map[selected_tf_label]
 
-# 即時監控開關
 auto_refresh = st.sidebar.toggle(
     "🔄 啟用即時監控 (專注模式)", 
     value=False, 
     key="auto_refresh_state"
 )
 
-# 自動重啟邏輯
 if st.session_state['pending_restart']:
     st.sidebar.warning("⏳ 參數調整中，即將重啟監控...")
     time.sleep(1) 
@@ -112,16 +141,14 @@ resolved_code, resolved_name = get_stock_code(st.session_state['target_symbol'])
 if not resolved_code:
     st.error(f"無效代號: {st.session_state['target_symbol']}")
 
-# 🔥 防閃爍核心：使用 fragment + 固定高度容器
+# 🔥 使用 fragment 進行局部更新
 @st.fragment(run_every=5 if auto_refresh else None)
 def display_dashboard():
     if not resolved_code: return
 
-    # 1. 使用固定高度的 container 框住整個區域
-    # 這能防止數據加載時畫面高度塌陷造成的「視覺閃爍」
+    # 使用固定高度容器
     with st.container(height=600, border=False):
         
-        # 獲取數據
         df, stats = get_orb_signals(resolved_code, st.session_state['fugle_key'], timeframe=selected_tf_code)
         
         if df is not None:
@@ -152,16 +179,17 @@ def display_dashboard():
                  fig.add_trace(go.Scatter(x=[stats['exit_time']], y=[stats['exit_price']], mode='markers', marker=dict(size=15, color='red', symbol='x', line=dict(width=2, color='white')), name="出場"))
 
             fig.update_layout(
-                height=400, # 固定圖表高度
+                height=400, # 強制固定高度
                 template="plotly_dark", 
                 plot_bgcolor='#0E1117', paper_bgcolor='#0E1117', font=dict(color='white'),
                 xaxis=dict(showgrid=True, gridcolor='#333', type='category'),
                 yaxis=dict(showgrid=True, gridcolor='#333'),
                 margin=dict(l=0, r=0, t=10, b=0),
-                uirevision='constant' # 鎖定視角，防止重繪時跳動
+                uirevision='constant', # 鎖定視角
+                transition={'duration': 0} # 🔥 禁止 Plotly 內部動畫，防止線條滑動造成的殘影
             )
             
-            # 🔥 關鍵：在 fragment 內使用固定 key 是合法的，因為 fragment 每次執行都是「更新」而非「重建」
+            # 使用固定 key，配合 uirevision 實現原地更新
             st.plotly_chart(fig, use_container_width=True, key="live_chart_fragment")
             
         else:
