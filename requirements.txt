@@ -1,10 +1,10 @@
 streamlit
-playwright==1.40.0
-greenlet
-requests
+playwright>=1.42.0
+fugle-marketdata>=1.1.0
+yfinance
 pandas
 numpy
-yfinance
-fugle-marketdata
 twstock
 plotly
+requests
+greenlet
