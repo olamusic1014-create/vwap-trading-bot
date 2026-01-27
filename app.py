@@ -8,35 +8,31 @@ import time
 
 st.set_page_config(page_title="智能選股戰情室", layout="wide", page_icon="🛡️")
 
-# 🔥🔥🔥 終極防閃爍 CSS 核彈 🔥🔥🔥
-# 這段代碼會強制禁止 Streamlit 在運算時把畫面變灰/變透明
+# 🔥🔥🔥 針對卷軸 (Scrollbar) 與閃爍的 CSS 修復 🔥🔥🔥
 st.markdown("""
     <style>
-    /* 1. 針對 Fragment 容器，強制移除所有過場動畫 */
+    /* 1. 隱藏 Fragment 內的所有卷軸 (關鍵！解決抖動) */
     div[data-testid="stFragment"] {
+        overflow: hidden !important;
         animation: none !important;
         transition: none !important;
-        opacity: 1 !important;
-        filter: none !important;
     }
     
-    /* 2. 針對 Fragment 內的所有子元素，繼承不透明屬性 */
-    div[data-testid="stFragment"] * {
-        animation: none !important;
-        transition: none !important;
-        opacity: 1 !important;
-        filter: none !important;
+    /* 2. 針對 Chrome/Safari/Edge 的卷軸隱藏語法 */
+    div[data-testid="stFragment"] ::-webkit-scrollbar {
+        display: none !important;
+        width: 0px !important;
     }
 
-    /* 3. 隱藏右上角的 "Running" 小人動畫 */
-    div[data-testid="stStatusWidget"] {
-        visibility: hidden;
-    }
-
-    /* 4. 鎖定 Plotly 圖表容器，防止高度坍塌 */
+    /* 3. 強制鎖定 Plotly 圖表容器，防止高度坍塌 */
     div[data-testid="stPlotlyChart"] {
-        height: 450px !important;
-        overflow: hidden;
+        width: 100% !important;
+        overflow: hidden !important;
+    }
+    
+    /* 4. 消除 Streamlit 預設的元件間距，減少版面跳動 */
+    .block-container {
+        padding-top: 2rem !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -146,8 +142,8 @@ if not resolved_code:
 def display_dashboard():
     if not resolved_code: return
 
-    # 使用固定高度容器
-    with st.container(height=600, border=False):
+    # 🔥 關鍵調整：把容器高度設大一點 (650)，確保有足夠空間
+    with st.container(height=650, border=False):
         
         df, stats = get_orb_signals(resolved_code, st.session_state['fugle_key'], timeframe=selected_tf_code)
         
@@ -161,6 +157,7 @@ def display_dashboard():
             src_color = "#00FF00" if "Fugle" in src else "orange"
             st.markdown(f"**資料來源:** <span style='color:{src_color}; font-weight:bold'>{src}</span>", unsafe_allow_html=True)
             
+            # 指標區域
             col1, col2, col3 = st.columns(3)
             col1.metric("目前股價", f"{stats['signal_price']:.2f}")
             last_vwap = df['VWAP'].iloc[-1] if not df.empty and 'VWAP' in df.columns else 0
@@ -178,24 +175,23 @@ def display_dashboard():
             if stats.get('exit_time'):
                  fig.add_trace(go.Scatter(x=[stats['exit_time']], y=[stats['exit_price']], mode='markers', marker=dict(size=15, color='red', symbol='x', line=dict(width=2, color='white')), name="出場"))
 
+            # 🔥 關鍵調整：把圖表高度稍微改小 (380)，留出下方緩衝區，避免觸發卷軸
             fig.update_layout(
-                height=400, # 強制固定高度
+                height=380, 
                 template="plotly_dark", 
                 plot_bgcolor='#0E1117', paper_bgcolor='#0E1117', font=dict(color='white'),
                 xaxis=dict(showgrid=True, gridcolor='#333', type='category'),
                 yaxis=dict(showgrid=True, gridcolor='#333'),
                 margin=dict(l=0, r=0, t=10, b=0),
-                uirevision='constant', # 鎖定視角
-                transition={'duration': 0} # 🔥 禁止 Plotly 內部動畫，防止線條滑動造成的殘影
+                uirevision='constant', 
+                transition={'duration': 0} 
             )
             
-            # 使用固定 key，配合 uirevision 實現原地更新
             st.plotly_chart(fig, use_container_width=True, key="live_chart_fragment")
             
         else:
             st.error(f"無法取得數據 (Source: {stats.get('source')})")
 
-# 執行 fragment
 if resolved_code:
     display_dashboard()
 
